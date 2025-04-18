@@ -1,0 +1,8 @@
+# configs/dem.yaml
+circuit_params:
+  code_task: "surface_code:rotated_memory_z"  
+  distance: 3
+  rounds: 25
+error_rates:
+  after_clifford_depolarization: 0.01
+  after_reset_flip_probability: 0.005

@@ -1,0 +1,8 @@
+# configs/pauli_plus.yaml
+distance: 3
+rounds: 25
+depolarization: 0.001
+leakage_rate: 0.0005  # 0.05% per CZ gate
+cross_talk: 0.01
+t1: 700
+measurement_duration: 100
