@@ -18,14 +18,13 @@ def main(model_type: str, num_samples: int):
         syndromes, logicals = generate_dem_data(num_samples, config)
     elif model_type == "si1000":
         circuit = si1000_noise_model(config["p"])
-        # Implement sampling for SI1000 (example)
-        syndromes = np.random.rand(num_samples, 10)  # Placeholder
-        logicals = np.random.randint(0, 2, num_samples)  # Placeholder
+        sampler = circuit.compile_detector_sampler()
+        syndromes, logicals = sampler.sample(num_samples, separate_observables=True)
     elif model_type == "pauli_plus":
         sim = PauliPlusSimulator(config)
-        # Implement Pauli+ simulation (example)
-        syndromes = np.random.rand(num_samples, 15)  # Placeholder
-        logicals = np.random.randint(0, 2, num_samples)  # Placeholder
+        sampler = sim.circuit.compile_detector_sampler()      # or however your class exposes it
+        syndromes, logicals = sampler.sample(num_samples, separate_observables=True)
+
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
