@@ -3,9 +3,9 @@ import argparse
 import os
 import yaml
 import numpy as np
-from src.dem_generator import generate_dem_data
-from src.si1000_generator import si1000_noise_model
-from src.pauli_plus_simulator import PauliPlusSimulator
+from simulator.dem_generator import generate_dem_data
+from simulator.si1000_generator import si1000_noise_model
+from simulator.pauli_plus_simulator import PauliPlusSimulator
 
 def main(model_type: str, num_samples: int):
     # Load configuration
