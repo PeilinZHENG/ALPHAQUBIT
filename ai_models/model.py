@@ -256,6 +256,11 @@ if __name__ == '__main__':
         dilation=1,
         basis='X'
     )
+ 
+    model_path = os.path.abspath("alphaqubit_model.pth")
+    if os.path.exists(model_path):
+        print(f"Loading existing model from: {model_path}")
+        model.load_state_dict(torch.load(model_path))
 
     train_model(
         model, train_loader, val_loader,
@@ -265,7 +270,7 @@ if __name__ == '__main__':
 
     import os
     print("Saving model to:", os.path.abspath("alphaqubit_model.pth"))
-    torch.save(model.state_dict(), "alphaqubit_model.pth")
+    torch.save(model.state_dict(), os.path.abspath("alphaqubit_model.pth"))
 
  
 
