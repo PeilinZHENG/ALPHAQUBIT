@@ -2,12 +2,14 @@
 # This module implements the AlphaQubit decoder and training script.
 # Data files live in the sibling "output" folder at project root, so we reference ../output/ by default.
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import math
+from tqdm import tqdm
 
 
 class StabilizerEmbedder(nn.Module):
@@ -197,7 +199,7 @@ def train_model(
     for ep in range(1, epochs + 1):
         model.train()
         total_loss = 0.0
-        for Xb, yb in train_loader:
+        for Xb, yb in tqdm(train_loader, desc=f"Epoch {ep}/{args.epochs} [Train]", unit="batch"):
             Xb, yb = Xb.to(device), yb.to(device)
             logits = model(Xb)
             loss = criterion(logits, yb)
