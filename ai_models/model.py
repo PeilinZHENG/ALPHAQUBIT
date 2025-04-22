@@ -262,3 +262,10 @@ if __name__ == '__main__':
         epochs=args.epochs, lr=args.lr,
         device='cuda' if torch.cuda.is_available() else 'cpu'
     )
+
+    import os
+    print("Saving model to:", os.path.abspath("alphaqubit_model.pth"))
+    torch.save(model.state_dict(), "alphaqubit_model.pth")
+
+ 
+
