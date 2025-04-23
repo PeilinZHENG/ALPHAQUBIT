@@ -132,6 +132,15 @@ def train_and_save_for(folder, args, device):
     # 初始化模型
     S = ds.bits_per_shot      # detectors 数量
     F = 1                     # 每个 detector 对应一个特征维度
+
+    basename = os.path.basename(folder)
+    if '_bX_' in basename:
+        basis = 'X'
+    elif '_bZ_' in basename:
+        basis = 'Z'
+    else:
+        raise ValueError(f"Could not determine basis from folder name: {basename}")
+
     model = AlphaQubitDecoder(
         num_features=F,
         hidden_dim=128,
@@ -140,18 +149,22 @@ def train_and_save_for(folder, args, device):
         num_heads=4,
         num_layers=3,
         dilation=1,
-        basis='X'
+        basis=basis
     )
+
+    #model.load_state_dict(torch.load("alphaqubit_model.pth"))
+
+ 
 
     # —— 插入 LoRA Adapter —— 
     from peft import LoraConfig, get_peft_model, TaskType
     peft_config = LoraConfig(
         task_type=TaskType.FEATURE_EXTRACTION,
         inference_mode=False,
-        r=8,                           
-        lora_alpha=32,
+        r=2,                           
+        lora_alpha=16,
         lora_dropout=0.05,
-        target_modules=["ff.0", "ff.2", "attn"]
+        target_modules=["attn"]
     )
     # wrap and train only the adapters
     model = get_peft_model(model, peft_config)
