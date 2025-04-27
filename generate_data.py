@@ -7,7 +7,7 @@ from simulator.dem_generator import generate_dem_data
 from simulator.si1000_generator import si1000_noise_model
 from simulator.pauli_plus_simulator import PauliPlusSimulator
 
-def main(model_type: str, num_samples: int):
+def main(model_type: str, num_samples: int, basis: str):
     # Load configuration
     config_path = os.path.join("configs", f"{model_type}.yaml")
     with open(config_path, "r") as f:
@@ -21,7 +21,7 @@ def main(model_type: str, num_samples: int):
         sampler = circuit.compile_detector_sampler()
         syndromes, logicals = sampler.sample(num_samples, separate_observables=True)
     elif model_type == "pauli_plus":
-        sim = PauliPlusSimulator(config)
+        sim = PauliPlusSimulator(config, basis)
         sampler = sim.circuit.compile_detector_sampler()      # or however your class exposes it
         syndromes, logicals = sampler.sample(num_samples, separate_observables=True)
 
@@ -34,8 +34,8 @@ def main(model_type: str, num_samples: int):
 
     # Save data as numpy arrays
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    syndrome_path = os.path.join(output_dir, f"{model_type}_syndromes_{timestamp}.npy")
-    logicals_path = os.path.join(output_dir, f"{model_type}_logicals_{timestamp}.npy")
+    syndrome_path = os.path.join(output_dir, f"{model_type}_syndromes_{basis}_{timestamp}.npy")
+    logicals_path = os.path.join(output_dir, f"{model_type}_logicals_{basis}_{timestamp}.npy")
     
     np.save(syndrome_path, syndromes)
     np.save(logicals_path, logicals)
@@ -55,5 +55,10 @@ if __name__ == "__main__":
                       default=1000,
                       help="Number of samples to generate")
     
+    parser.add_argument("--basis",
+                    type=str,
+                    default='z',
+                    help="basis:x or z")
+    
     args = parser.parse_args()
-    main(args.model, args.samples)
+    main(args.model, args.samples, args.basis)

@@ -3,7 +3,7 @@ import numpy as np
 from scipy.stats import multivariate_normal
 
 class PauliPlusSimulator:
-    def __init__(self, config):
+    def __init__(self, config, basis):
         self.distance = config["distance"]
         self.rounds = config["rounds"]
         self.depolarization = config["depolarization"]
@@ -11,11 +11,11 @@ class PauliPlusSimulator:
         self.cross_talk = config["cross_talk"]
         self.t1 = config["t1"]
         self.measurement_duration = config["measurement_duration"]
-        self.circuit = self._build_noisy_circuit()
+        self.circuit = self._build_noisy_circuit(basis)
 
-    def _build_noisy_circuit(self):
+    def _build_noisy_circuit(self,basis):
         circuit = stim.Circuit.generated(
-            "surface_code:rotated_memory_z",
+            "surface_code:rotated_memory_"+basis,
             rounds=self.rounds,
             distance=self.distance,
             after_clifford_depolarization=self.depolarization
