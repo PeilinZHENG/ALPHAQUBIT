@@ -366,6 +366,13 @@ def build_dataset(pairs) -> Dataset:
 
 
 def train(model, tr_loader, va_loader, epochs, lr, device):
+    
+    # Wrap model with DataParallel if multiple GPUs are available
+    if torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs!")
+        model = nn.DataParallel(model)
+    
+
     model.to(device)
     opt  = torch.optim.Adam(model.parameters(), lr=lr)
     loss = nn.BCEWithLogitsLoss()
@@ -409,7 +416,12 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     torch.manual_seed(42)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Device configuration
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_data_parallel = torch.cuda.device_count() > 1
+
+
 
     pairs = discover_all_pairs(args.output_dir)
     if not pairs:
@@ -434,14 +446,24 @@ if __name__ == "__main__":
 
     model = AlphaQubitDecoder(F, 128, S, grid_size)
 
+        # In your main code where you load the checkpoint:
     ckpt = "alphaqubit.pth"
     if os.path.exists(ckpt):
         try:
-            model.load_state_dict(torch.load(ckpt, map_location="cpu"))
+            state_dict = torch.load(ckpt, map_location="cpu")
+            # Handle loading a DataParallel model
+            if isinstance(model, nn.DataParallel):
+                model.module.load_state_dict(state_dict)
+            else:
+                model.load_state_dict(state_dict)
             print("Loaded checkpoint", ckpt)
         except Exception as e:
-            print("[warn] checkpoint mismatch – starting fresh:", e)
-
+            print("[warn] checkpoint mismatch - starting fresh:", e)
+    
     train(model, tr_loader, va_loader, args.epochs, args.lr, device)
-    torch.save(model.state_dict(), ckpt)
-    print("Saved model →", ckpt)
+    # And when saving:
+    if isinstance(model, nn.DataParallel):
+        torch.save(model.module.state_dict(), ckpt)  # Save only the module state_dict
+    else:
+        torch.save(model.state_dict(), ckpt)
+    print("Saved model ->", ckpt)
