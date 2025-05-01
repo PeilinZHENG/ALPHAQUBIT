@@ -16,64 +16,189 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from tqdm import tqdm
 
-# ---------------------------------------------------------------------
-#  Optimized Multi-Head Latent Attention
-# ---------------------------------------------------------------------
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+from typing import Optional, Tuple
 
-class MultiHeadLatentAttention(nn.Module):
-    def __init__(self, d_model, num_heads):
+def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
+    ndim = x.ndim
+    assert 0 <= 1 < ndim
+    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+    return freqs_cis.view(*shape)
+
+class DeepSeekMLA(nn.Module):
+    """Fully implemented MLA as described in DeepSeek paper"""
+    
+    def __init__(self, 
+                 d_model: int, 
+                 num_heads: int,
+                 d_c: int = 64,
+                 d_c1: int = 64,
+                 d_rotate: int = 32,
+                 max_seq_len: int = 2048,
+                 max_batch_size: int = 32):
         super().__init__()
+        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
+        
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
+        self.d_c = d_c          # KV compression dimension
+        self.d_c1 = d_c1        # Query compression dimension
+        self.d_rotate = d_rotate # Rotary dimension
         
-        # Projections
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
+        # Compression projections
+        self.DKV = nn.Linear(d_model, d_c)   # Key-Value compressor
+        self.DQ = nn.Linear(d_model, d_c1)   # Query compressor
+        
+        # Decompression projections  
+        self.UQ = nn.Linear(d_c1, d_model)   # Query decompressor
+        self.UK = nn.Linear(d_c, d_model)    # Key decompressor
+        self.UV = nn.Linear(d_c, d_model)    # Value decompressor
+        
+        # Rotary projections
+        self.RQ = nn.Linear(d_c1, num_heads * d_rotate)  # Query rotary
+        self.RK = nn.Linear(d_model, d_rotate)           # Key rotary
+        
+        # Output projection
         self.out_proj = nn.Linear(d_model, d_model)
         
-        # Rotary components
-        self.rotary_dim = min(32, d_model // 4)
-        self.rotary = nn.Linear(d_model, num_heads * self.rotary_dim)
+        # KV cache setup
+        self.register_buffer('cache_kv', torch.zeros(max_batch_size, max_seq_len, d_c))
+        self.register_buffer('cache_rk', torch.zeros(max_batch_size, max_seq_len, d_rotate))
         
-        self._init_weights()
+        # Precompute rotary frequencies
+        self.register_buffer('freqs_cis', self.precompute_freqs_cis(d_rotate, max_seq_len * 2))
+        
+        # Initialize parameters
+        self._init_parameters()
 
-    def _init_weights(self):
-        for lin in [self.q_proj, self.k_proj, self.v_proj, self.out_proj, self.rotary]:
-            nn.init.xavier_uniform_(lin.weight)
-            if lin.bias is not None:
-                nn.init.constant_(lin.bias, 0)
+    def _init_parameters(self):
+        # Orthogonal initialization for compression matrices
+        nn.init.orthogonal_(self.DKV.weight)
+        nn.init.orthogonal_(self.DQ.weight)
+        
+        # Xavier for decompression
+        nn.init.xavier_uniform_(self.UQ.weight)
+        nn.init.xavier_uniform_(self.UK.weight) 
+        nn.init.xavier_uniform_(self.UV.weight)
+        
+        # Small init for rotary projections
+        nn.init.normal_(self.RQ.weight, std=0.02)
+        nn.init.normal_(self.RK.weight, std=0.02)
 
-    def forward(self, x):
+    @staticmethod
+    def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+        t = torch.arange(end, device=freqs.device)
+        freqs = torch.outer(t, freqs)
+        return torch.polar(torch.ones_like(freqs), freqs)  # complex64
+
+    def apply_rotary_emb(
+        self,
+        xq: torch.Tensor,
+        xk: torch.Tensor,
+        freqs_cis: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+        
+        freqs_cis_q = reshape_for_broadcast(freqs_cis[:xq.size(1)], xq_)
+        freqs_cis_k = reshape_for_broadcast(freqs_cis[:xk.size(1)], xk_)
+        
+        xq_out = torch.view_as_real(xq_ * freqs_cis_q).flatten(3)
+        xk_out = torch.view_as_real(xk_ * freqs_cis_k).flatten(3)
+        return xq_out.type_as(xq), xk_out.type_as(xk)
+ 
+    def forward(
+        self,
+        x: torch.Tensor,
+        key_value_states: Optional[torch.Tensor] = None,
+        attn_mask: Optional[torch.Tensor] = None,
+        use_cache: bool = False,
+        start_pos: int = 0
+    ) -> torch.Tensor:
         B, S, _ = x.shape
         
-        # Project queries, keys, values
-        q = self.q_proj(x).view(B, S, self.num_heads, self.head_dim)
-        k = self.k_proj(x).view(B, S, self.num_heads, self.head_dim)
-        v = self.v_proj(x).view(B, S, self.num_heads, self.head_dim)
+        # ===== Compression Phase =====
+        C_Q = self.DQ(x)
+        if key_value_states is not None:
+            C_KV = self.DKV(key_value_states)
+            K_rotate = self.RK(key_value_states)
+        else:
+            C_KV = self.DKV(x)
+            K_rotate = self.RK(x)
         
-        # Add rotary features
-        r = self.rotary(x).view(B, S, self.num_heads, self.rotary_dim)
-        q = torch.cat([q, r], dim=-1)
-        k = torch.cat([k, r], dim=-1)
+        # ===== KV Cache Handling =====
+        if use_cache:
+            self.cache_kv[:B, start_pos:start_pos+S] = C_KV
+            self.cache_rk[:B, start_pos:start_pos+S] = K_rotate
+            C_KV = self.cache_kv[:B, :start_pos+S]
+            K_rotate = self.cache_rk[:B, :start_pos+S]
         
-        # Attention computation
-        scale = 1.0 / math.sqrt(self.head_dim + self.rotary_dim)
-        q = q.transpose(1, 2) * scale  # [B, nh, S, hd+rd]
-        k = k.transpose(1, 2)          # [B, nh, S, hd+rd]
+        # ===== Decompression Phase ===== 
+        Q = self.UQ(C_Q)
+        K = self.UK(C_KV)
+        V = self.UV(C_KV)
         
-        scores = torch.matmul(q, k.transpose(-2, -1))  # [B, nh, S, S]
-        attn = torch.softmax(scores, dim=-1)
+        # ===== Rotary Embeddings =====
+        Q_rotate = self.RQ(C_Q).view(B, S, self.num_heads, self.d_rotate)
+        K_rotate = K_rotate.unsqueeze(2).expand(-1, -1, self.num_heads, -1)
         
-        output = torch.matmul(attn, v.transpose(1, 2))  # [B, nh, S, hd]
-        output = output.transpose(1, 2).reshape(B, S, -1)
+        Q_rotate, K_rotate = self.apply_rotary_emb(
+            Q_rotate, 
+            K_rotate,
+            self.freqs_cis[start_pos:]
+        )
         
+        # ===== Attention Computation =====
+        # Split heads and combine with rotary features
+        Q = torch.cat([
+            Q.view(B, S, self.num_heads, self.head_dim),
+            Q_rotate
+        ], dim=-1).transpose(1, 2)  # [B, nh, S, hd+rd]
+        
+        K = torch.cat([
+            K.view(B, -1, self.num_heads, self.head_dim),
+            K_rotate
+        ], dim=-1).transpose(1, 2)  # [B, nh, S', hd+rd]
+        
+        V = V.view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        # Compute attention scores with safe scaling
+        scale = 1.0 / math.sqrt(self.head_dim + self.d_rotate)
+        attn = (Q * scale) @ K.transpose(-2, -1)
+        
+        # Handle attention mask
+        if attn_mask is not None:
+            if not isinstance(attn_mask, torch.Tensor):
+                attn_mask = torch.tensor(attn_mask, dtype=torch.float32, device=attn.device)
+            attn_mask = attn_mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, S']
+            attn = attn + attn_mask
+        
+        # SAFE SOFTMAX ALTERNATIVE
+        def safe_softmax(x, dim=-1):
+            # Ensure we're working with a tensor
+            if not isinstance(x, torch.Tensor):
+                x = torch.tensor(x, dtype=torch.float32, device=Q.device)
+            
+            # Convert to float32 if needed
+            if not torch.is_floating_point(x):
+                x = x.float()
+            
+            # Numerical stability
+            x_max = x.max(dim=dim, keepdim=True).values
+            x_exp = torch.exp(x - x_max)
+            return x_exp / (x_exp.sum(dim=dim, keepdim=True) + 1e-10)
+        
+        # Apply our safe softmax
+        attn = safe_softmax(attn, dim=-1)
+        
+        # Combine values
+        output = (attn @ V).transpose(1, 2).reshape(B, S, -1)
         return self.out_proj(output)
-
-# ---------------------------------------------------------------------
-#  Stable AlphaQubit Components
-# ---------------------------------------------------------------------
 
 class StabilizerEmbedder(nn.Module):
     def __init__(self, num_features, hidden_dim, num_stabilizers):
@@ -111,25 +236,43 @@ class SyndromeTransformerLayer(nn.Module):
     def __init__(self, hidden_dim, num_heads, num_stabilizers, grid_size):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_dim)
-        self.attn = MultiHeadLatentAttention(hidden_dim, num_heads)
+        self.attn = DeepSeekMLA(hidden_dim, num_heads)
         self.norm2 = nn.LayerNorm(hidden_dim)
-        
-        # Gated FFN
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim, 4 * hidden_dim),
             nn.GELU(),
             nn.Linear(4 * hidden_dim, hidden_dim)
         )
-        
-        # Initialize FFN properly
-        nn.init.xavier_uniform_(self.ffn[0].weight)
-        nn.init.xavier_uniform_(self.ffn[2].weight)
-        nn.init.constant_(self.ffn[0].bias, 0)
-        nn.init.constant_(self.ffn[2].bias, 0)
 
     def forward(self, x, events, prev_events):
+        # Convert inputs to tensors if they aren't already
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(x, dtype=torch.float32, device=self.attn.out_proj.weight.device)
+        
         # Attention block
-        x = x + self.attn(self.norm1(x))
+        try:
+            attn_output = self.attn(
+                self.norm1(x),
+                attn_mask=None
+            )
+            x = x + attn_output
+        except Exception as e:
+            print(f"Error in attention layer: {e}")
+            print(f"Input shape: {x.shape}")
+            raise
+        
+        # FFN block
+        x = x + self.ffn(self.norm2(x))
+        
+        return x
+ 
+    
+    def forward(self, x, events, prev_events):
+        # Attention block
+        x = x + self.attn(
+            self.norm1(x),
+            attn_mask=None  # Explicitly pass None if not using mask
+        )
         
         # FFN block
         x = x + self.ffn(self.norm2(x))
@@ -159,6 +302,7 @@ class ReadoutNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 1)
         )
+
         
         # Initialize
         nn.init.xavier_uniform_(self.conv.weight)
@@ -226,6 +370,8 @@ class AlphaQubitDecoder(nn.Module):
             prev_events = x[..., 0]
             
         return self.readout(state, basis)
+    
+    
 
 class PauliPlusDataset(Dataset):
     """
