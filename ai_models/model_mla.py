@@ -7,8 +7,7 @@ AlphaQubit – Working MLA Implementation
 import os
 import math
 import sys
-# allow imports from project root
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+ 
 
 import argparse
 from glob import glob
@@ -25,6 +24,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Optional, Tuple
+
+import time
+from datetime import datetime, timedelta
 
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     ndim = x.ndim
@@ -272,9 +274,11 @@ def train(model, tr_loader, va_loader, epochs, lr, device):
     criterion = nn.BCEWithLogitsLoss()
     
     best_val = float('inf')
+    last_save_time = datetime.now()
     for epoch in range(1, epochs+1):
         model.train()
         total_loss = 0
+
         
         pbar = tqdm(tr_loader, desc=f"Epoch {epoch}/{epochs}")
         for (xb, basis, mask), yb in pbar:
@@ -290,6 +294,13 @@ def train(model, tr_loader, va_loader, epochs, lr, device):
             
             total_loss += loss.item()
             pbar.set_postfix(loss=loss.item())
+            current_time = datetime.now()
+            if current_time - last_save_time >= timedelta(minutes=10):
+                # Save checkpoint
+                checkpoint_path = f"alphaqubit_mla.pth"
+                torch.save(model.state_dict(), "alphaqubit_mla.pth")
+                print(f"\nCheckpoint saved to {checkpoint_path} at {current_time}")
+                last_save_time = current_time
         
         # Validation
         model.eval()
@@ -311,7 +322,8 @@ def train(model, tr_loader, va_loader, epochs, lr, device):
         
         if val_loss < best_val:
             best_val = val_loss
-            torch.save(model.state_dict(), "alphaqubit_mla_best.pth")
+            torch.save(model.state_dict(), "alphaqubit_mla.pth")
+            print("Best model saved to alphaqubit_mla.pth")
 # ---------------------------------------------------------------------
 #  Main Execution
 # ---------------------------------------------------------------------
@@ -376,5 +388,5 @@ if __name__ == "__main__":
     train(model, tr_loader, va_loader, args.epochs, args.lr, device)
     
     # Save final model
-    torch.save(model.state_dict(), "alphaqubit_mla.pth")
+    #torch.save(model.state_dict(), "alphaqubit_mla.pth")
     print("Training complete. Model saved to alphaqubit_mla.pth")

@@ -1,22 +1,23 @@
 import os
 import sys
-# allow imports from project root
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 import argparse
 import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 import torch_optimizer as optim_extra
-from ai_models.model import AlphaQubitDecoder
+#from ai_models.model import AlphaQubitDecoder
+ 
+from model_mla import AlphaQubitDecoder   
 import stim
 import math
 import gc
 from tqdm import tqdm
 from peft import LoraConfig, get_peft_model, TaskType
+import time
 
-MODEL_FILENAME = "alphaqubit_model.pth"  # pretrained base model in project root
+#MODEL_FILENAME = "alphaqubit_model.pth"  # pretrained base model in project root
+MODEL_FILENAME = "alphaqubit_mla.pth" 
 
 
 def parse_args():
@@ -59,9 +60,11 @@ def parse_args():
 
 
 class SingleFolderDataset(Dataset):
-    """按需加载单个 shot，避免一次性解包所有数据"""
     def __init__(self, folder_path):
-        # 1) 加载标签
+
+
+
+        # 1) Load labels
         lbl_file = os.path.join(folder_path, "obs_flips_actual.01")
         if not os.path.exists(lbl_file):
             raise FileNotFoundError(f"Label file not found: {lbl_file}")
@@ -69,46 +72,83 @@ class SingleFolderDataset(Dataset):
         self.labels = torch.from_numpy(lbls).float()
         self.n_shots = lbls.shape[0]
 
-        # 2) 映射原始二进制文件
+        # 2) Map detection events
         det_file = os.path.join(folder_path, "detection_events.b8")
         if not os.path.exists(det_file):
             raise FileNotFoundError(f"Detection events not found: {det_file}")
-        raw = np.memmap(det_file, dtype=np.uint8, mode='r')
+        self.raw = np.memmap(det_file, dtype=np.uint8, mode='r')
 
-        # 3) 计算每个 shot 的 bit 数和对应的 byte 数
-        total_bits = raw.size * 8
-        if total_bits % self.n_shots != 0:
-            raise ValueError(
-                f"Cannot evenly divide {total_bits} bits by {self.n_shots} shots"
-            )
+        # 3) Calculate stabilizer dimensions
+        total_bits = self.raw.size * 8  # Convert bytes to bits
         self.bits_per_shot = total_bits // self.n_shots
+        
+        # Validate alignment
+        if total_bits % self.n_shots != 0:
+            raise ValueError(f"Total bits {total_bits} not divisible by {self.n_shots} shots")
         if self.bits_per_shot % 8 != 0:
             raise ValueError("bits_per_shot must be divisible by 8")
         self.bytes_per_shot = self.bits_per_shot // 8
 
-        # 4) 保存映射对象
-        self.raw = raw
+         
+        # Calculate grid dimensions
+        self.d = math.isqrt(self.bits_per_shot + 1)
+        if self.d * self.d != self.bits_per_shot + 1:
+            self.d += 1
+        self.S_pad = self.d * self.d - 1
+        
+        # Should match what the model sees
+        print(f"Stabilizers: Original={self.bits_per_shot}, Padded={self.S_pad}, Grid={self.d-1}x{self.d-1}")
 
+        # 4) Determine basis from folder name
+        basename = os.path.basename(folder_path)
+        self.basis_id = 0 if "_bX_" in basename else 1
+
+        # 5) Calculate padding for grid alignment
+        d = math.isqrt(self.bits_per_shot + 1)
+        if d * d != self.bits_per_shot + 1:
+            d += 1  # Need to pad to next square
+        self.S_pad = d * d - 1  # Total stabilizers after padding
+
+        # 6) Create final_mask matching model_mla's logic
+        self.final_mask = torch.zeros(self.S_pad, dtype=torch.long)
+        for idx in range(self.S_pad):
+            r, c = divmod(idx, d)
+            # Alternate 1/2 pattern like PauliPlusDataset
+            self.final_mask[idx] = 1 if (r + c) % 2 == 0 else 2
+
+        # 7) Store original dimensions
+        self.original_shape = (1, self.bits_per_shot, 1)  # (R, S, F)
     def __len__(self):
         return self.n_shots
 
+    # In SingleFolderDataset.__getitem__():
+
     def __getitem__(self, idx):
-        # 1) 取出对应 shot 的原始 bytes
+        # 1. Load detection events (x)
         start = idx * self.bytes_per_shot
-        end   = start + self.bytes_per_shot
+        end = start + self.bytes_per_shot
         raw_shot = self.raw[start:end]
-
-        # 2) 解包为 bits，并 reshape
         bits = np.unpackbits(raw_shot)
-        data = bits.reshape(1, self.bits_per_shot, 1)  # (1, detectors, 1)
-
-        # 3) 转为 float tensor
-        x = torch.from_numpy(data).float()
+        
+        # 2. Create x tensor [R=1, S_initial, F=1]
+        x = torch.from_numpy(bits).float().view(1, -1, 1)  # (1, S_initial, 1)
+        
+        # 3. Pad to S_pad stabilizers
+        if x.shape[1] < self.S_pad:
+            x = torch.cat([
+                x, 
+                torch.zeros(1, self.S_pad - x.shape[1], 1)
+            ], dim=1)
+        
+        # 4. Get label (y)
         y = self.labels[idx]
-        return x, y
-
-
+        
+        # 5. Return formatted data
+        return (x, 
+                torch.tensor(self.basis_id),  # From __init__
+                self.final_mask.clone()), y    # From __init__
  
+
 def train_and_save_for(folder, args, device):
     print(f"\n=== Fine-tuning on {folder} ===")
     try:
@@ -117,136 +157,133 @@ def train_and_save_for(folder, args, device):
         print(f"[ERROR] {e}")
         return
 
-    # 划分数据集
+    # Extract dimensions from dataset
+    F = 1  # Single feature per stabilizer (detection event)
+    S = ds.S_pad  # Padded stabilizer count from dataset
+
+    # Split dataset
     total = len(ds)
     train_n = min(args.train_samples, total)
     valid_n = min(args.valid_samples, total - train_n)
-    test_n  = total - train_n - valid_n
+    test_n = total - train_n - valid_n
     train_ds, valid_ds, test_ds = torch.utils.data.random_split(
         ds, [train_n, valid_n, test_n]
     )
+
+    # Create loaders
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, pin_memory=True)
     valid_loader = DataLoader(valid_ds, batch_size=args.batch_size, pin_memory=True)
-    test_loader  = DataLoader(test_ds,  batch_size=args.batch_size, pin_memory=True)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, pin_memory=True)
 
-    # 初始化模型
-    S = ds.bits_per_shot      # detectors 数量
-    F = 1                     # 每个 detector 对应一个特征维度
-
-    basename = os.path.basename(folder)
-    if '_bX_' in basename:
-        basis = 'X'
-    elif '_bZ_' in basename:
-        basis = 'Z'
-    else:
-        raise ValueError(f"Could not determine basis from folder name: {basename}")
-
+    # Initialize model
+    # With proper grid calculation:
+    d = int(math.sqrt(S + 1))  # S is the padded stabilizer count
     model = AlphaQubitDecoder(
         num_features=F,
         hidden_dim=128,
         num_stabilizers=S,
-        grid_size=0,          # 关闭空间卷积
+        grid_size=d-1,  # Proper grid calculation
         num_heads=4,
-        num_layers=3,
-        dilation=1,
-        basis=basis
+        num_layers=3
     )
 
-    #model.load_state_dict(torch.load("alphaqubit_model.pth"))
+    # Load pretrained weights if available
+    ckpt_path = "alphaqubit_mla.pth"
+    if os.path.exists(ckpt_path):
+        try:
+            state_dict = torch.load(ckpt_path, map_location="cpu")
+            model.load_state_dict(state_dict, strict=False)
+            print(f"Loaded pretrained weights from {ckpt_path}")
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}\nStarting from scratch")
+    else:
+        print("No pretrained model found - initializing new model")
 
- 
-
-    # —— 插入 LoRA Adapter —— 
-    from peft import LoraConfig, get_peft_model, TaskType
-    peft_config = LoraConfig(
-        task_type=TaskType.FEATURE_EXTRACTION,
-        inference_mode=False,
-        r=2,                           
-        lora_alpha=16,
-        lora_dropout=0.05,
-        target_modules=["attn"]
-    )
-    # wrap and train only the adapters
-    model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()  # should list only LoRA params
-
-
-    # 加载预训练权重（过滤不匹配项）
-    raw_sd = torch.load(MODEL_FILENAME, map_location='cpu')
-    sd = {
-        k: v for k, v in raw_sd.items()
-        if k in model.state_dict() and model.state_dict()[k].shape == v.shape
-    }
-    model.load_state_dict(sd, strict=False)
     model.to(device)
 
-    # 优化器和损失
-    optimizer = optim_extra.Lamb(
+    # Initialize optimizer and loss
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
         weight_decay=args.weight_decay
     )
     criterion = nn.BCEWithLogitsLoss()
 
-    # 训练 + 早停
+    # Training loop with early stopping
     best_val = float('inf')
-    wait = 0
+    wait = 0    
+    last_checkpoint_time = time.time()
+    checkpoint_interval = 30 * 60  # 30 minutes in seconds
+
     for epoch in range(1, args.epochs + 1):
+        # Training phase
         model.train()
-        for x, y in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs} [Train]", unit="batch"):
-
-            x, y = x.to(device), y.to(device)
+        train_loss = 0.0
+        for (x, basis, mask), y in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs} [Train]"):
+            x, basis, mask, y = x.to(device), basis.to(device), mask.to(device), y.to(device)
+            
             optimizer.zero_grad()
-        
-            logits = model.base_model(x)
-            loss   = criterion(model.base_model(x), y)
+            outputs = model(x, basis, mask)
+            loss = criterion(outputs, y)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            train_loss += loss.item()
 
+            # Check if 30 minutes have passed since last checkpoint
+            current_time = time.time()
+            if current_time - last_checkpoint_time >= checkpoint_interval:
+                checkpoint_path = f"alphaqubit_{os.path.basename(folder)}_epoch{epoch}_interim.pth"
+                torch.save(model.state_dict(), checkpoint_path)
+                print(f"\nSaved interim checkpoint at {checkpoint_path}")
+                last_checkpoint_time = current_time
+
+
+        # Validation phase
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for x, y in valid_loader:
-                x, y = x.to(device), y.to(device)
-                logits    = model.base_model(x)
-                batch_loss = criterion(logits, y)
-                val_loss  += batch_loss.item() * x.size(0)
-        val_loss /= len(valid_ds)
-        print(f"Epoch {epoch}: Validation Loss = {val_loss:.6f}")
+            for (x, basis, mask), y in valid_loader:
+                x, basis, mask, y = x.to(device), basis.to(device), mask.to(device), y.to(device)
+                outputs = model(x, basis, mask)
+                val_loss += criterion(outputs, y).item()
 
+        avg_train_loss = train_loss / len(train_loader)
+        avg_val_loss = val_loss / len(valid_loader)
+        print(f"Epoch {epoch}: Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
-        if val_loss < best_val:
-            best_val = val_loss
+        # Early stopping check
+        if avg_val_loss < best_val:
+            best_val = avg_val_loss
             wait = 0
-            out = f"alphaqubit_{os.path.basename(folder)}.pth"
-            print(f"Saving best model → {out}")
-            torch.save(model.state_dict(), out)
+            torch.save(model.state_dict(), f"alphaqubit_{os.path.basename(folder)}.pth")
         else:
             wait += 1
             if wait >= args.patience:
-                print("Early stopping.")
+                print(f"Early stopping at epoch {epoch}")
                 break
 
-    # 测试评估
-    best_file = f"alphaqubit_{os.path.basename(folder)}.pth"
-    model.load_state_dict(torch.load(best_file, map_location=device))
+    # Test evaluation
+    model.load_state_dict(torch.load(f"alphaqubit_{os.path.basename(folder)}.pth", map_location=device))
     model.eval()
-    correct = total = 0
+    correct = 0
+    total = 0
     with torch.no_grad():
-        for x, y in test_loader:
-            x, y  = x.to(device), y.to(device)
-            logits = model.base_model(x)
-            preds  = (torch.sigmoid(logits) > 0.5).float()
+        for (x, basis, mask), y in test_loader:
+            x, basis, mask, y = x.to(device), basis.to(device), mask.to(device), y.to(device)
+            outputs = model(x, basis, mask)
+            preds = (torch.sigmoid(outputs) > 0.5).float()
             correct += (preds == y).sum().item()
-            total   += y.size(0)
-    print(f"Test Accuracy on {folder}: {correct/total:.4f}")
+            total += y.size(0)
+    
+    print(f"Test Accuracy: {correct/total:.4f}")
 
-
-    # 释放内存
+    # Cleanup
     del model, optimizer, train_loader, valid_loader, test_loader, ds
     if device.type == 'cuda':
         torch.cuda.empty_cache()
     gc.collect()
+
 
 
 def main():
