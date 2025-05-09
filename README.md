@@ -112,7 +112,7 @@ python ai_models/decode.py --model alphaqubit_model.pth --data output/si1000_sam
   title={Learning high-accuracy error decoding for quantum processors},
   author={Xu, David and Google Quantum AI},
   journal={Nature},
-  year={2024},
+  year={2025},
 }
 ```
 

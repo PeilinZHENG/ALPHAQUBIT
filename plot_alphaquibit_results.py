@@ -1,86 +1,114 @@
 # File: plot_alphaqubit_results.py
 
+import os
+import sys
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from ai_models.model import AlphaQubitDecoder
+from ai_models.fine_tune import SingleFolderDataset
+import argparse
 
-# —— 配置 —— 
-MODEL_PATH = "alphaqubit_model.pth"  # 你保存的最佳模型文件
-DEVICE     = torch.device("cpu")  # 或者 "cuda" 如果有 GPU
-# 这里用 Google Sycamore 测试数据下载解压后，自己根据格式写加载函数：
-def load_round_data(round_num):
-    """
-    返回 (X, y)：
-      - X: numpy array，shape=(N_shots, rounds, num_stabilizers, 1)
-      - y: numpy array，shape=(N_shots,)
-    你可以复用 SingleFolderDataset 的逻辑，或者直接 np.load
-    """
-    # TODO: 实现数据加载
-    pass
+# —— 解析命令行参数 —— 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-root", type=str, required=True, help="Path to experiment subfolders")
+    parser.add_argument(
+    "--model-dir", type=str, default=os.getcwd(),
+    help="Directory where alphaqubit_*.pth models live"
+)
+
+    return parser.parse_args()
+    
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # —— 模型加载 —— 
-def load_model():
-    # 构造一个和训练时一模一样的模型
-    # 注意要填入当初训练时的 hidden_dim、num_layers、grid_size…
+def load_model(model_path, folder_path):
+    # …
+    # infer basis from folder name
+    folder_name = os.path.basename(folder_path)
+    basis = 'Z' if '_bZ_' in folder_name else 'X'
+
+    S = ds.bits_per_shot
     model = AlphaQubitDecoder(
         num_features=1,
         hidden_dim=128,
-        num_stabilizers=1023,  # 需替换成你的实验 stabilizer 数
-        grid_size=31,
+        num_stabilizers=S,
+        grid_size=0,
         num_heads=4,
         num_layers=3,
         dilation=1,
-        basis='X'
+        basis=basis
     )
-    sd = torch.load(MODEL_PATH, map_location=DEVICE)
-    model.load_state_dict(sd)
+    state = torch.load(model_path, map_location=DEVICE)
+    model.load_state_dict(state, strict=False)
     model.to(DEVICE).eval()
-    return model
+    return model, ds
+
 
 # —— 计算 LER —— 
-def compute_ler(model, rounds):
-    ler = []
+import re
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+
+def compute_epsilon(model, ds, rounds):
+    """
+    Compute the Logical Error per Round ε by inverting:
+      E = 1 - accuracy
+      E = ½[1 - (1 - 2ε)^n]  ⇒  ε = ½[1 - (1 - 2E)^(1/n)]
+    """
+    loader = DataLoader(ds, batch_size=512, pin_memory=True)
+    correct = total = 0
     with torch.no_grad():
-        for r in rounds:
-            X, y = load_round_data(r)
-            X = torch.from_numpy(X).to(DEVICE)
-            logits = model(X).view(-1)
-            preds = (torch.sigmoid(logits) > 0.5).cpu().numpy()
-            ler.append(np.mean(preds != y))
-    return ler
+        for x, y in loader:
+            x, y = x.to(model.device), y.to(model.device)
+            logits = model(x).view(-1)
+            preds = (torch.sigmoid(logits) > 0.5).float()
+            correct += (preds == y).sum().item()
+            total += y.size(0)
+    E = 1 - (correct / total)
+    # avoid numerical issues
+    one_minus_2E = max(0.0, min(1.0, 1 - 2 * E))
+    ε = 0.5 * (1 - one_minus_2E ** (1 / rounds))
+    return ε
 
-# —— 绘图函数 —— 
-def plot_ler_per_round(rounds, ler):
-    vals = [1 - 2*e for e in ler]
-    plt.plot(rounds, vals, '-o')
-    plt.xlabel("Error-correction round")
-    plt.ylabel("1 - 2 × Logical Error")
-    plt.title("AlphaQubit Fine-tuned LER vs Round")
-    plt.grid(True)
-    plt.show()
-
-def plot_ler_comparison(distances, pre, fine):
-    x = np.arange(len(distances))
-    w = 0.35
-    plt.bar(x-w/2, pre,  width=w, label="Pretrained")
-    plt.bar(x+w/2, fine, width=w, label="Fine-tuned")
-    plt.xticks(x, [f"d={d}" for d in distances])
-    plt.xlabel("Code distance")
-    plt.ylabel("Logical Error Rate")
-    plt.title("AlphaQubit LER: Pre vs Fine")
-    plt.legend()
-    plt.show()
 
 # —— 主流程 —— 
 if __name__ == "__main__":
-    model = load_model()
-    rounds = [1,3,5,7,9,11,13,15,17,19,21,23,25]
-    ler_rounds = compute_ler(model, rounds)
-    plot_ler_per_round(rounds, ler_rounds)
+    args = parse_args()
+    data_root = args.data_root
 
-    distances = [3, 5]
-    # 下面数组要自己算出或从论文里拷过来
-    pretrained_ler = [0.02901, 0.02748]
-    finetuned_ler  = [0.02901, 0.02748]
-    plot_ler_comparison(distances, pretrained_ler, finetuned_ler)
+    folders = [os.path.join(data_root, d) for d in os.listdir(data_root)
+               if os.path.isdir(os.path.join(data_root, d))]
+
+    folder_names = []
+    ler_values = []
+
+    for folder in sorted(folders):
+        folder_name = os.path.basename(folder)
+        # e.g. "..._r25_..."
+        m = re.search(r"_r(\d+)_", folder_name)
+        if not m:
+            print(f"[SKIP] can't parse rounds from {folder_name}")
+            continue
+        rounds = int(m.group(1))
+        model_path = os.path.join(args.model_dir, f"alphaqubit_{folder_name}.pth")
+
+        model, ds = load_model(model_path, folder)
+        ε = compute_epsilon(model, ds, rounds)
+        folder_names.append(f"{folder_name} (ε)")
+        ler_values.append(ε)
+
+
+    # —— 绘图 —— 
+    x = np.arange(len(folder_names))
+    plt.figure(figsize=(12, 6))
+    plt.bar(x, ler_values, color='tab:blue')
+    plt.xticks(x, folder_names, rotation=75, ha='right')
+    plt.ylabel("Logical Error Rate (LER)")
+    plt.title("Logical Error Rate per Experiment Folder (Fine-Tuned Models)")
+    plt.tight_layout()
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    plt.show()

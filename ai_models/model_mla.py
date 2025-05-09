@@ -1,14 +1,7 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-AlphaQubit – Working MLA Implementation
-"""
-
+from pauli_plus_dataset import PauliPlusDataset
 import os
 import math
 import sys
- 
-
 import argparse
 from glob import glob
 from typing import List, Tuple
@@ -18,13 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from tqdm import tqdm
-
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import math
-from typing import Optional, Tuple
-
 import time
 from datetime import datetime, timedelta
 
@@ -34,7 +21,6 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
     return freqs_cis.view(*shape)
 
- 
 
 from mla.core import DeepSeekMLA
   
@@ -82,14 +68,11 @@ class SyndromeTransformerLayer(nn.Module):
             nn.Linear(4 * hidden_dim, hidden_dim)
         )
 
- 
     def forward(self, x, events, prev_events):
-        # 修改为不传入attn_mask
         x = x + self.attn(self.norm1(x))
         x = x + self.ffn(self.norm2(x))
         return x
     
- 
 class SyndromeTransformer(nn.Module):
     def __init__(self, hidden_dim, num_heads, num_layers, num_stabilizers, grid_size):
         super().__init__()
@@ -114,7 +97,6 @@ class ReadoutNetwork(nn.Module):
             nn.Linear(hidden_dim, 1)
         )
 
-        
         # Initialize
         nn.init.xavier_uniform_(self.conv.weight)
         nn.init.constant_(self.conv.bias, 0)
@@ -162,101 +144,51 @@ class AlphaQubitDecoder(nn.Module):
 
     def forward(self, inputs, basis, final_mask):
         B, R, S, F = inputs.shape
-        
-        # Initialize state
-        state = torch.zeros(B, S, self.embedder.index_embed.embedding_dim, 
-                           device=inputs.device)
+        state = torch.zeros(B, S, self.embedder.index_embed.embedding_dim, device=inputs.device)
         prev_events = torch.zeros(B, S, device=inputs.device)
         
         # Process each round
         for r in range(R):
             x = inputs[:, r]
-            
-            # Embed and combine
             emb = self.embedder(x, final_mask if r == R-1 else torch.zeros_like(final_mask))
             state = (state + emb) / math.sqrt(2.0)
-            
-            # Transformer
             state = self.transformer(state, x[..., 0], prev_events)
             prev_events = x[..., 0]
             
         return self.readout(state, basis)
-    
-    
 
-class PauliPlusDataset(Dataset):
-    """
-    Loads syndromes/logicals and zero-pads dummy stabilisers so that
-    S+1 is a perfect square (required by AlphaQubit geometry).
-    Returns:
-        features : (R, S_pad, F)
-        basis_id : scalar long
-        final_mask: (S_pad,)  (1 = on, 2 = off)
-    """
-    def __init__(self, synd_path: str, log_path: str, basis_id: int):
-        y = np.load(log_path)
-        self.y = torch.tensor(y, dtype=torch.float32).view(-1)   # (N,)
-        N = len(self.y)
 
-        x = np.load(synd_path)                                   # raw syndromes
-
-        # --- reshape to (N, R, S, C) ---------------------------
-        if x.ndim == 2:                     # (N,S) or (R,S)
-            if x.shape[0] == N:
-                x = x[:, None, :, None]
-            else:                           # single sample
-                x = x[None, :, :, None]
-        elif x.ndim == 3:                   # (N,R,S) or (R,S,C)
-            if x.shape[0] != N:
-                x = x[None, ...]            # single sample
-            if x.ndim == 3:                 # no feature axis
-                x = x[..., None]
-        elif x.ndim != 4:
-            raise ValueError(f"{synd_path}: unsupported shape {x.shape}")
-
-        # --- append basis-ID channel ---------------------------
-        basis_feat = np.full((*x.shape[:-1], 1), basis_id, dtype=x.dtype)
-        x = np.concatenate([x, basis_feat], axis=-1)             # (N,R,S,F)
-
-        # --- pad stabilisers -----------------------------------
-        N, R, S, F = x.shape
-        d = math.isqrt(S + 1)
-        if d*d != S + 1:             # not a perfect square -> pad zeros
-            d += 1
-            pad = d*d - 1 - S
-            x = np.concatenate([x, np.zeros((N, R, pad, F), dtype=x.dtype)],
-                               axis=2)
-            S += pad
-        self.X = torch.tensor(x, dtype=torch.float32)            # (N,R,S,F)
-        self.basis = torch.full((N,), basis_id, dtype=torch.long)
-
-        # final-round on/off mask
-        self.final_mask = torch.zeros(N, S, dtype=torch.long)
-        for idx, (r, c) in enumerate([(i//d, i%d) for i in range(1, S+1)]):
-            self.final_mask[:, idx] = 1 if (r+c)%2==0 else 2
-
-    def __len__(self):  return len(self.y)
-
-    def __getitem__(self, idx):
-        return (self.X[idx], self.basis[idx], self.final_mask[idx]), self.y[idx]
 
 # ---------------------------------------------------------------------
-#  Helper functions & training loop
+#  Find every bundle saved by the simulator
 # ---------------------------------------------------------------------
+def discover_all_pairs(out_dir: str) -> List[Tuple[str, int]]:
+    """
+    Return a list of (npz_path, basis_id) tuples.
 
-def discover_all_pairs(out_dir: str) -> List[Tuple[str, str, int]]:
-    pairs = []
-    for basis, bid in [("x",0), ("z",1)]:
-        for s in glob(os.path.join(out_dir, f"*syndromes_{basis}_*.npy")):
-            l = s.replace("syndromes", "logicals")
-            if os.path.exists(l):
-                pairs.append((s, l, bid))
+    • We scan for  samples_*.npz  inside <out_dir>.
+    • Basis is deduced from the file name:
+          “…_bX_…” → basis_id = 0   (X basis)
+          “…_bZ_…” → basis_id = 1   (Z basis)
+      Anything else → basis_id = -1  (unknown / both)
+    """
+    pairs: list[tuple[str, int]] = []
+    for npz_file in glob(os.path.join(out_dir, "samples_*.npz")):
+        name = os.path.basename(npz_file).lower()
+        if "_bx_" in name:
+            bid = 0
+        elif "_bz_" in name:
+            bid = 1
+        else:
+            bid = -1
+        pairs.append((npz_file, bid))
     return sorted(pairs)
 
 
+
 def build_dataset(pairs) -> Dataset:
-    datasets = [PauliPlusDataset(s,l,b) for s,l,b in pairs]
-    return datasets[0] if len(datasets)==1 else ConcatDataset(datasets)
+    datasets = [PauliPlusDataset(npz_file, b) for npz_file, b in pairs]
+    return datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
 
 # ---------------------------------------------------------------------
 #  Training Utilities (Modified for MLA)
@@ -279,7 +211,6 @@ def train(model, tr_loader, va_loader, epochs, lr, device):
         model.train()
         total_loss = 0
 
-        
         pbar = tqdm(tr_loader, desc=f"Epoch {epoch}/{epochs}")
         for (xb, basis, mask), yb in pbar:
             xb, basis, mask, yb = xb.to(device), basis.to(device), mask.to(device), yb.to(device)
@@ -296,13 +227,11 @@ def train(model, tr_loader, va_loader, epochs, lr, device):
             pbar.set_postfix(loss=loss.item())
             current_time = datetime.now()
             if current_time - last_save_time >= timedelta(minutes=10):
-                # Save checkpoint
                 checkpoint_path = f"alphaqubit_mla.pth"
                 torch.save(model.state_dict(), "alphaqubit_mla.pth")
                 print(f"\nCheckpoint saved to {checkpoint_path} at {current_time}")
                 last_save_time = current_time
         
-        # Validation
         model.eval()
         val_loss = 0
         correct = 0
@@ -324,36 +253,25 @@ def train(model, tr_loader, va_loader, epochs, lr, device):
             best_val = val_loss
             torch.save(model.state_dict(), "alphaqubit_mla.pth")
             print("Best model saved to alphaqubit_mla.pth")
-# ---------------------------------------------------------------------
-#  Main Execution
-# ---------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output_dir", default="./output")
+    parser.add_argument("--simulated_data_dir", default="./simulated_data")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=5e-4)
     args = parser.parse_args()
 
-    # Device setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Dataset
-    pairs = []
-    for basis, bid in [("x", 0), ("z", 1)]:
-        for s in glob(os.path.join(args.output_dir, f"*syndromes_{basis}_*.npy")):
-            l = s.replace("syndromes", "logicals")
-            if os.path.exists(l):
-                pairs.append((s, l, bid))
+    pairs = discover_all_pairs(args.simulated_data_dir)
     
     if not pairs:
-        raise RuntimeError(f"No data found in {args.output_dir}")
+        raise RuntimeError(f"No data found in {args.simulated_data_dir}")
     
-    dataset = ConcatDataset([PauliPlusDataset(s, l, b) for s, l, b in pairs])
+    dataset = ConcatDataset([PauliPlusDataset(npz_file, b) for npz_file, b in pairs])
     
-    # Train/val split
     n = len(dataset)
     idx = torch.randperm(n)
     split = int(0.9 * n)
@@ -364,7 +282,6 @@ if __name__ == "__main__":
     tr_loader = DataLoader(tr_ds, batch_size=args.batch_size, shuffle=True)
     va_loader = DataLoader(va_ds, batch_size=args.batch_size)
 
-    # Model
     (x0, _, _), _ = dataset[0]
     R, S, F = x0.shape
     d = int(math.sqrt(S + 1))
@@ -374,7 +291,6 @@ if __name__ == "__main__":
     
     model = AlphaQubitDecoder(F, 128, S, grid_size)
     
-    # Load checkpoint if available
     ckpt = "alphaqubit_mla.pth"
     if os.path.exists(ckpt):
         try:
@@ -384,9 +300,5 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Couldn't load checkpoint: {e}")
     
-    # Train
     train(model, tr_loader, va_loader, args.epochs, args.lr, device)
-    
-    # Save final model
-    #torch.save(model.state_dict(), "alphaqubit_mla.pth")
     print("Training complete. Model saved to alphaqubit_mla.pth")

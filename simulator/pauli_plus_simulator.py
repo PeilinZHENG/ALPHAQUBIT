@@ -1,19 +1,43 @@
 import stim
 import numpy as np
 from scipy.stats import multivariate_normal
+import random
 
 class PauliPlusSimulator:
-    def __init__(self, config, basis):
+    def __init__(self, config):
+        # Config parameters with defaults
+        self.depolarization = config.get("depolarization", 0.001)
+        self.leakage_rate = config.get("leakage_rate", 0.01)
+        self.cross_talk = config.get("cross_talk", 0.002)
+        self.t1 = config.get("t1", 1000)
+        self.measurement_duration = config.get("measurement_duration", 100)
+        
+        # Possible values like Google's experiment
+        self.possible_distances = [3, 5]  # Could add 7,9,11 etc.
+        self.possible_rounds = list(range(1, 26, 2))  # 1,3,...,25
+        self.possible_bases = ['X', 'Z']
+    
+    def generate_experiment_config(self):
+        """Generate a random experiment configuration"""
+        return {
+            "distance": random.choice(self.possible_distances),
+            "rounds": random.choice(self.possible_rounds),
+            "basis": random.choice(self.possible_bases)
+        }
+    
+    def generate_experiment(self, config=None):
+        """Generate a circuit with random parameters if none provided"""
+        if config is None:
+            config = self.generate_experiment_config()
+            
         self.distance = config["distance"]
         self.rounds = config["rounds"]
-        self.depolarization = config["depolarization"]
-        self.leakage_rate = config["leakage_rate"]
-        self.cross_talk = config["cross_talk"]
-        self.t1 = config["t1"]
-        self.measurement_duration = config["measurement_duration"]
-        self.circuit = self._build_noisy_circuit(basis)
-
-    def _build_noisy_circuit(self,basis):
+        self.basis = config["basis"]
+        
+        self.circuit = self._build_noisy_circuit(self.basis)
+        return self.circuit
+    
+    def _build_noisy_circuit(self, basis):
         circuit = stim.Circuit.generated(
             "surface_code:rotated_memory_"+basis,
             rounds=self.rounds,
@@ -55,3 +79,7 @@ class PauliPlusSimulator:
         if row > 0: neighbors.append(q - self.distance)
         if row < self.distance - 1: neighbors.append(q + self.distance)
         return neighbors
+
+    def generate_batch(self, num_experiments):
+        """Generate multiple experiments with random configurations"""
+        return [self.generate_experiment() for _ in range(num_experiments)]

@@ -1,94 +1,107 @@
-import argparse
+# google_qec_simulator/main.py
+# --------------------------------------------------------------------
+"""
+Generate one soft-channel .npz bundle for a SINGLE experiment folder.
+
+Usage
+-----
+    python -m google_qec_simulator.main  <exp_subdir>  [--shots 2000] [--out ./custom.npz]
+
+Arguments
+---------
+<exp_subdir> : path of ONE folder that holds *.stim (and optional *.dem)
+--shots      : Monte-Carlo repetitions per circuit (default 1000)
+--out        : output filename; if omitted we write
+                 samples_<exp_subdir_name>.npz  into the *same* folder
+"""
+
 from pathlib import Path
-from experiment_simulator import ExperimentSimulator
-import stim
-import shutil
-import sys
+import argparse
+import numpy as np
 
-def create_valid_test_environment(test_dir: Path) -> Path:
-    """Create a test environment with valid surface code circuits"""
-    test_dir.mkdir(exist_ok=True)
-    
-    # Create valid surface code circuit
-    surface_code = stim.Circuit("""
-        # Surface code with deterministic detectors
-        R 0 1 2 3
-        H 0
-        CNOT 0 1
-        CNOT 0 2
-        CNOT 0 3
-        M 0 1 2 3
-        DETECTOR rec[-4] rec[-3]  # Z1*Z2
-        DETECTOR rec[-4] rec[-2]  # Z0*Z2
-        DETECTOR rec[-4] rec[-1]  # Z0*Z1
-    """)
-    
-    (test_dir / "surface_code").mkdir(exist_ok=True)
-    with open(test_dir / "surface_code" / "circuit_noisy.stim", "w") as f:
-        f.write(str(surface_code))
-    
-    return test_dir
+from stim_helpers  import extract_rounds_and_dets
+from data_helpers  import reshape_detectors, soft_channels
+from data_manager  import DataManager
+from circuit_utils import sample_detectors_obs
 
-def process_experiment_data(data_dir: Path, output_dir: Path, shots: int):
-    """Process all subfolders (experiment datasets) in the given directory."""
-    # Create test environment if none exists
-    if not data_dir.exists():
-        print("⚠️ No data found - creating test environment...")
-        data_dir = create_valid_test_environment(data_dir)
-    
-    try:
-        # Initialize simulator
-        sim = ExperimentSimulator(data_dir, shots=shots)
-        print(f"\nFound {len(list(data_dir.iterdir()))} circuit directories")
-        
-        # Run simulation
-        print("\nRunning simulation for all experiments...")
-        sim.run_simulation()
-        
-        # Save results
-        output_dir.mkdir(exist_ok=True)
-        sim.save_results(output_dir/"samples.npz", output_dir/"circuit_table.json")
-        
-        print("\n✔ Simulation completed successfully for all experiments!")
-        
-    except Exception as e:
-        print(f"\n✖ Error: {type(e).__name__} - {str(e)}", file=sys.stderr)
-        sys.exit(1)
-    finally:
-        # Optional: Clean up test data if desired
-        pass
 
-def main():
-    parser = argparse.ArgumentParser(description="Quantum Error Correction Simulator")
-    parser.add_argument(
-        '--data_dir', 
-        type=str, 
-        help="Path to the directory containing experiment subfolders (datasets)"
-    )
-    parser.add_argument(
-        '--output_dir', 
-        type=str, 
-        default="results", 
-        help="Path to save the simulation results (default: 'results')"
-    )
-    parser.add_argument(
-        '--shots', 
-        type=int, 
-        default=1000, 
-        help="Number of shots for each simulation (default: 1000)"
-    )
+# --------------------------------------------------------------------
+def list_stim_files(folder: Path) -> list[Path]:
+    """Return *.stim files that live *directly* in <folder> (no recursion)."""
+    return sorted(p for p in folder.iterdir() if p.suffix == ".stim" and p.is_file())
 
-    # Parse the command-line arguments
-    args = parser.parse_args()
 
-    # Convert data_dir and output_dir to Path objects
-    data_dir = Path(args.data_dir).resolve()
-    output_dir = Path(args.output_dir).resolve()
-    
-    print(f"Using data directory: {data_dir}")
-    print(f"Results will be saved to: {output_dir}")
-    
-    process_experiment_data(data_dir, output_dir, args.shots)
+def simulate_folder(
+    exp_dir: Path,
+    out_file: Path,
+    shots: int = 1000,
+    snr: float = 10.0,
+    t: float   = 0.01,
+) -> None:
+    dm = DataManager()
+    stim_files = list_stim_files(exp_dir)
 
+    if not stim_files:
+        raise RuntimeError(f"No *.stim in {exp_dir}")
+
+    print(f"[scan] {len(stim_files)} stim files in {exp_dir.name}")
+
+    for stim_path in stim_files:
+        print(f"[sample] {stim_path.name}  shots={shots}")
+        det_flat, obs = sample_detectors_obs(stim_path, shots)
+        det          = reshape_detectors(det_flat, stim_path, shots)  # (N,R,S,1)
+
+        R, S         = extract_rounds_and_dets(stim_path)
+        post1, post2 = soft_channels(shots * R * S, snr, t)
+        post1        = post1.reshape(shots, R, S, 1)
+        post2        = post2.reshape(shots, R, S, 1)
+
+        dm.store(np.concatenate([det, post1, post2], axis=-1), obs)
+
+    dm.save(out_file)
+
+
+# =====================================================================
+# CLI entry-point
+# =====================================================================
 if __name__ == "__main__":
-    main()
+    import argparse
+    from pathlib import Path
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("exp_dir", type=Path,
+                    help="ONE experiment sub-folder that contains *.stim files")
+    ap.add_argument("--shots", type=int, default=1000,
+                    help="Monte-Carlo shots per circuit (default 1000)")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="Output .npz (default = <ROOT>/output/samples_<folder>.npz)")
+    args = ap.parse_args()
+
+    if not args.exp_dir.is_dir():
+        raise SystemExit(f"❌  {args.exp_dir} is not a directory")
+
+    # -----------------------------------------------------------------
+    # DEFAULT OUTPUT LOCATION
+    #   <root>/output/samples_<subfolder>.npz
+    # -----------------------------------------------------------------
+    # -----------------------------------------------------------------
+    # DEFAULT OUTPUT:
+    #   <PROJECT_ROOT>/output/samples_<subfolder>.npz
+    #   (PROJECT_ROOT = the folder that contains this repo, i.e. two
+    #    levels above this main.py file)
+    # -----------------------------------------------------------------
+    if args.out is None:
+        # main.py → google_qec_simulator → <PROJECT_ROOT>
+        project_root = Path(__file__).resolve().parents[1]
+        out_dir      = project_root / "simulated_data"
+        out_dir.mkdir(exist_ok=True)
+        args.out     = out_dir / f"samples_{args.exp_dir.name}.npz"
+
+
+    simulate_folder(
+        exp_dir  = args.exp_dir,
+        out_file = args.out,
+        shots    = args.shots,
+    )
+    print("DONE →", args.out.resolve())
+

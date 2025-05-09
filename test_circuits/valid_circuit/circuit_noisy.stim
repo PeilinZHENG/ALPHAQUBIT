@@ -1,0 +1,6 @@
+R 0 1
+H 0
+CX 0 1
+M 0 1
+DETECTOR rec[-1]
+DETECTOR rec[-2]
