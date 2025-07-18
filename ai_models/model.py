@@ -367,8 +367,13 @@ def build_dataset(pairs) -> Dataset:
 
 def train(model, tr_loader, va_loader, epochs, lr, device):
     
-    # Wrap model with DataParallel if multiple GPUs are available
-    if torch.cuda.device_count() > 1:
+    # Wrap model with DataParallel if multiple devices are available
+    if device.type == "npu" and hasattr(torch, "npu"):
+        npu_count = getattr(torch.npu, "device_count", lambda: 1)()
+        if npu_count > 1:
+            print(f"Using {npu_count} NPUs!")
+            model = nn.DataParallel(model)
+    elif device.type == "cuda" and torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs!")
         model = nn.DataParallel(model)
     
@@ -413,13 +418,21 @@ if __name__ == "__main__":
     p.add_argument("--epochs",     type=int, default=20)
     p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--lr",         type=float, default=1e-3)
+    p.add_argument("--npu", action="store_true", help="Use available NPUs for training")
     args = p.parse_args()
 
     torch.manual_seed(42)
 
     # Device configuration
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    use_data_parallel = torch.cuda.device_count() > 1
+    if args.npu:
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            device = torch.device("npu")
+            use_data_parallel = getattr(torch.npu, "device_count", lambda: 1)() > 1
+        else:
+            raise RuntimeError("--npu specified but NPU support is unavailable")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        use_data_parallel = torch.cuda.device_count() > 1
 
 
 

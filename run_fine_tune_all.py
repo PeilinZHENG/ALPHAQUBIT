@@ -34,6 +34,7 @@ def main():
         default=16,
         help="Batch size to pass to fine_tune"
     )
+    parser.add_argument("--npu", action="store_true", help="Use NPUs for training")
     args = parser.parse_args()
 
     project_root  = Path(__file__).resolve().parent
@@ -74,6 +75,8 @@ def main():
             "--epochs",     str(args.epochs),
             "--batch-size", str(args.batch_size),
         ]
+        if args.npu:
+            sys.argv.append("--npu")
         runpy.run_path(str(ft_script), run_name="__main__")
 
 if __name__ == "__main__":
