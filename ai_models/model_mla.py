@@ -536,9 +536,16 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--npu", action="store_true", help="Use available NPUs for training")
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.npu:
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            device = torch.device("npu")
+        else:
+            raise RuntimeError("--npu specified but NPU support is unavailable")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Get basis from filename
@@ -568,6 +575,14 @@ if __name__ == "__main__":
     print(f"Rounds={R} Stabilisers={S} Features={F} grid={d}×{d}")
     
     model = AlphaQubitDecoder(F, 128, S, grid_size)
+    if args.npu and hasattr(torch, "npu"):
+        npu_count = getattr(torch.npu, "device_count", lambda: 1)()
+        if npu_count > 1:
+            print(f"Using {npu_count} NPUs!")
+            model = nn.DataParallel(model)
+    elif not args.npu and torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs!")
+        model = nn.DataParallel(model)
     
     # Generate model save path from input file name
     model_save_path = get_model_name_from_path(args.npz_file)
