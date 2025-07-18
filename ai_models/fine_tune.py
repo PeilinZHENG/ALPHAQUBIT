@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from model_mla import AlphaQubitDecoder  # make sure this is on PYTHONPATH
 
-MODEL_FILENAME = "alphaqubit_mla.pth"  # default checkpoint name
+
 
 # -----------------------------------------------------------------------------
 # CLI
@@ -29,6 +29,7 @@ def parse_args():
     p.add_argument("--train-samples", "-t", type=int, default=19880, help="Max # training shots")
     p.add_argument("--valid-samples", "-v", type=int, default=5120, help="Max # validation shots")
     p.add_argument("--patience", "-p", type=int, default=5, help="Early‑stopping patience (epochs)")
+    p.add_argument("--model_path", "-m",required=True, help="Specify the path of the model to load and save") 
     return p.parse_args()
 
 # -----------------------------------------------------------------------------
@@ -131,12 +132,12 @@ def train_on_folder(folder: str, args, device):
         num_layers=3,
     ).to(device)
 
-    if os.path.exists(MODEL_FILENAME):
+    if os.path.exists(args.model_path):
         try:
-            model.load_state_dict(torch.load(MODEL_FILENAME, map_location="cpu"), strict=False)
-            print(f"Loaded base weights from {MODEL_FILENAME}")
+            model.load_state_dict(torch.load(args.model_path, map_location="cpu"), strict=False)
+            print(f"Loaded base weights from {args.model_path}")
         except Exception as e:
-            print(f"[WARN] Could not load {MODEL_FILENAME}: {e}")
+            print(f"[WARN] Could not load {args.model_path}: {e}")
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, steps_per_epoch=len(train_loader), epochs=args.epochs)
@@ -144,7 +145,7 @@ def train_on_folder(folder: str, args, device):
 
     best_val = float("inf")
     patience_cnt = 0
-    last_save = datetime.now()
+  
 
     for ep in range(1, args.epochs + 1):
         model.train(); running = 0.0
@@ -155,8 +156,7 @@ def train_on_folder(folder: str, args, device):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step(); sched.step(); running += loss.item()
-            if datetime.now() - last_save >= timedelta(minutes=10):
-                torch.save(model.state_dict(), MODEL_FILENAME); last_save = datetime.now()
+
         # validation
         model.eval(); v_loss = 0.0
         with torch.no_grad():

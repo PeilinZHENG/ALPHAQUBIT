@@ -6,3 +6,4 @@ leakage_rate: 0.0005  # 0.05% per CZ gate
 cross_talk: 0.01
 t1: 700
 measurement_duration: 100
+

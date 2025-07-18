@@ -4,6 +4,7 @@ ai_models/__init__.py
 ai_models/fine_tune.py
 ai_models/model.py
 ai_models/model_mla.py
+ai_models/pauli_plus_dataset.py
 alphaqubit.egg-info/PKG-INFO
 alphaqubit.egg-info/SOURCES.txt
 alphaqubit.egg-info/dependency_links.txt

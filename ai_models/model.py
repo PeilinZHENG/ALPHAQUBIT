@@ -460,7 +460,7 @@ if __name__ == "__main__":
         except Exception as e:
             print("[warn] checkpoint mismatch - starting fresh:", e)
     
-    train(model, tr_loader, va_loader, args.epochs, args.lr, device)
+    
     # And when saving:
     if isinstance(model, nn.DataParallel):
         torch.save(model.module.state_dict(), ckpt)  # Save only the module state_dict

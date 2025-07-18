@@ -1,59 +1,47 @@
 import os
-import subprocess
-import sys
+from pathlib import Path
 
-def run_simulations_on_subfolders(root_dir, shots=10000):
-    """
-    Run the QEC simulation on all subfolders of the given directory
+def main():
+    # Get the directory of the currently executing script (so it's portable)
+    script_dir = Path(__file__).resolve().parent  # this will work whether on local machine or in Google Drive
+    print(f"Script is running from: {script_dir}")
+
+    # Dynamically construct paths based on the current directory
+    data_dir = script_dir / 'simulated_data'  # dataset directory (relative to script)
+    output_dir = script_dir / 'simulated_data'  # output directory (relative to script)
     
-    Args:
-        root_dir (str): Root directory containing experiment data folders
-        shots (int): Number of shots to run for each simulation
-    """
-    if not os.path.isdir(root_dir):
-        print(f"Error: '{root_dir}' is not a valid directory", file=sys.stderr)
-        sys.exit(1)
+    # Ensure the output directory exists
+    if not output_dir.exists():
+        print(f"Creating output directory: {output_dir}")
+        os.makedirs(output_dir)
+
+    # Now we use the dynamically constructed paths to access files
+    print(f"Data directory: {data_dir}")
+    print(f"Output directory: {output_dir}")
+    
+    # Example command to simulate: Running simulation for each file in data_dir
+    npz_files = [f for f in data_dir.iterdir() if f.suffix == '.npz']
+    print(f"Found {len(npz_files)} .npz files. Running simulations...")
+
+    for idx, npz_file in enumerate(npz_files, start=1):
+        print(f"=== Running simulation {idx}/{len(npz_files)} ===")
+        print(f"File: {npz_file}")
         
-    # Get all subfolders
-    subfolders = []
-    for dirpath, dirnames, _ in os.walk(root_dir):
-        for dirname in dirnames:
-            full_path = os.path.abspath(os.path.join(dirpath, dirname))
-            subfolders.append(full_path)
-    
-    if not subfolders:
-        print(f"No subfolders found in {root_dir}")
-        return
-    
-    print(f"Found {len(subfolders)} subfolders. Running simulations...")
-    
-    # Run simulation for each subfolder
-    for i, folder in enumerate(subfolders, 1):
-        cmd = [
-            "python",
-            r".\google_qec_simulator\main.py",
-            folder,
-            "--shots",
-            str(shots)
-        ]
+        # Simulation command (example, adjust as needed)
+        command = f"python ./google_qec_simulator/main.py {npz_file} --shots 10000"
+        print(f"Command: {command}")
         
-        print(f"\n=== Running simulation {i}/{len(subfolders)} ===")
-        print(f"Folder: {folder}")
-        print(f"Command: {' '.join(cmd)}")
+        # Run your simulation here (subprocess or another method)
+        # subprocess.run(command, shell=True)  # Uncomment this when you're ready to run
         
-        try:
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-            print("Simulation completed successfully")
-            print("Output:", result.stdout)
-        except subprocess.CalledProcessError as e:
-            print("Simulation failed!")
-            print("Error:", e.stderr)
-            continue
+        # After running the simulation, load the .npz file from output directory
+        output_file = output_dir / f"samples{npz_file.stem[7:]}.npz"  # Remove the 'samples_' prefix
+        print(f"Output: Trying to load .npz file from {output_file}")
+        
+        if output_file.exists():
+            print(f"Simulation completed successfully: {output_file}")
+        else:
+            print(f"Error: The file {output_file} does not exist.")
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <experiment_data_directory>", file=sys.stderr)
-        sys.exit(1)
-        
-    experiment_dir = sys.argv[1]
-    run_simulations_on_subfolders(experiment_dir)
+    main()
