@@ -29,7 +29,8 @@ def parse_args():
     p.add_argument("--train-samples", "-t", type=int, default=19880, help="Max # training shots")
     p.add_argument("--valid-samples", "-v", type=int, default=5120, help="Max # validation shots")
     p.add_argument("--patience", "-p", type=int, default=5, help="Early‑stopping patience (epochs)")
-    p.add_argument("--model_path", "-m",required=True, help="Specify the path of the model to load and save") 
+    p.add_argument("--model_path", "-m",required=True, help="Specify the path of the model to load and save")
+    p.add_argument("--npu", action="store_true", help="Use available NPUs for training")
     return p.parse_args()
 
 # -----------------------------------------------------------------------------
@@ -131,6 +132,14 @@ def train_on_folder(folder: str, args, device):
         num_heads=4,
         num_layers=3,
     ).to(device)
+    if args.npu and hasattr(torch, "npu"):
+        npu_count = getattr(torch.npu, "device_count", lambda: 1)()
+        if npu_count > 1:
+            print(f"Using {npu_count} NPUs!")
+            model = nn.DataParallel(model)
+    elif device.type == "cuda" and torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs!")
+        model = nn.DataParallel(model)
 
     if os.path.exists(args.model_path):
         try:
@@ -195,7 +204,13 @@ def train_on_folder(folder: str, args, device):
 
 def main():
     args = parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.npu:
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            device = torch.device("npu")
+        else:
+            raise RuntimeError("--npu specified but NPU support is unavailable")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_on_folder(args.dataset, args, device)
 
 if __name__ == "__main__":
