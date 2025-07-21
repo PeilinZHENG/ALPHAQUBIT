@@ -429,7 +429,14 @@ if __name__ == "__main__":
             device = torch.device("npu")
             use_data_parallel = getattr(torch.npu, "device_count", lambda: 1)() > 1
         else:
-            raise RuntimeError("--npu specified but NPU support is unavailable")
+            print("Warning: --npu specified but NPU support is unavailable.")
+            print("This could be due to:")
+            print("1. Ascend-specific PyTorch not installed")
+            print("2. No Ascend NPU devices detected")
+            print("3. NPU drivers not properly configured")
+            print("Falling back to CUDA/CPU...")
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            use_data_parallel = torch.cuda.device_count() > 1
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         use_data_parallel = torch.cuda.device_count() > 1

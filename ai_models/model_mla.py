@@ -543,7 +543,13 @@ if __name__ == "__main__":
         if hasattr(torch, "npu") and torch.npu.is_available():
             device = torch.device("npu")
         else:
-            raise RuntimeError("--npu specified but NPU support is unavailable")
+            print("Warning: --npu specified but NPU support is unavailable.")
+            print("This could be due to:")
+            print("1. Ascend-specific PyTorch not installed")
+            print("2. No Ascend NPU devices detected")
+            print("3. NPU drivers not properly configured")
+            print("Falling back to CUDA/CPU...")
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
