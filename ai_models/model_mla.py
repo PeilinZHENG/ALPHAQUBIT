@@ -540,18 +540,37 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.npu:
-          # Attempt to import torch_npu to enable NPU support
-    if args.npu:
-        try:
-            import torch_npu  # patches torch to add NPU support
-        except ImportError:
-            print("Warning: torch_npu package is not installed; NPU support may be unavailable.")
+          # Attempt to import torch_npu to enable NP
+          pass
+    # Begin inserted NPU support
+    try:
+        import torch_npu  # patches torch to add NPU support
+    except ImportError:
+        print("Warning: torch_npu package is not installed; NPU support may be unavailable.")
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        device = torch.device("npu")
+    else:
+        print("Warning: --npu specified but NPU support is unavailable.")
+        print("This could be due to:")
+        print("1. Ascend-specific PyTorch not installed")
+        print("2. No Ascend NPU devices detected")
+        print("3. NPU drivers not properly configured")
+        print("Falling back to CUDA/CPU...")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+U su#pport
+    #i#i#f args.npu:
+    ##      pass
+#
+    #    try:
+    #        import torch_npu  # patches torch to add NPU support
+    #    except ImportError:
+    #        print("Warning: torch_npu package is not installed; NPU support may be unavailable.")
 
-        if hasattr(torch, "npu") and torch.npu.is_available():
-            device = torch.device("npu")
-        else:
-            print("Warning: --npu specified but NPU support is unavailable.")
-            print("This could be due to:")
+#   #     if hasattr(torch, "npu") and torch.npu.is_available():
+    #        device = torch.device("npu")
+    #    else:
+    #        print("Warning: --npu specified but NPU support is unavailable.")
+    ##        print("This could be due to:")
             print("1. Ascend-specific PyTorch not installed")
             print("2. No Ascend NPU devices detected")
             print("3. NPU drivers not properly configured")
