@@ -540,6 +540,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.npu:
+          # Attempt to import torch_npu to enable NPU support
+    if args.npu:
+        try:
+            import torch_npu  # patches torch to add NPU support
+        except ImportError:
+            print("Warning: torch_npu package is not installed; NPU support may be unavailable.")
+
         if hasattr(torch, "npu") and torch.npu.is_available():
             device = torch.device("npu")
         else:
