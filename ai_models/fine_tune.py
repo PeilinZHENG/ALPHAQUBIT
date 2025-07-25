@@ -204,7 +204,13 @@ def train_on_folder(folder: str, args, device):
 
 def main():
     args = parse_args()
-    if args.npu:
+            if args.npu:
+            try:
+                import torch_npu  # patches torch to add NPU support
+            except ImportError:
+                print("Warning: torch_npu package is not installed; NPU support may be unavailable.")
+
+     if args.npu:
         if hasattr(torch, "npu") and torch.npu.is_available():
             device = torch.device("npu")
         else:
