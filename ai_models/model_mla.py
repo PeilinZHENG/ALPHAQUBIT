@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
-from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from torch.utils.data import Dataset, DataLoader, ConcatDataset, DistributedSampler
 from tqdm import tqdm
 import torch
 import time
@@ -242,21 +242,23 @@ if __name__ == "__main__":
     parser.add_argument("--npu", action="store_true", help="Use available NPUs for training")
     args = parser.parse_args()
 
-    if args.npu:
-        if hasattr(torch, "npu") and torch.npu.is_available():
-            local_rank = int(os.getenv("LOCAL_RANK", 0))
-            torch.npu.set_device(local_rank)
-            device = torch.device(f"npu:{local_rank}")
+    # ---------- Device and optional DDP initialization ----------
+    if args.npu and hasattr(torch, "npu") and torch.npu.is_available():
+        # Setup DDP on NPUs
+        if "RANK" in os.environ:  # torchrun launched
+            dist.init_process_group(backend="hccl", init_method="env://")
+            local_rank = int(os.environ["LOCAL_RANK"])
         else:
-            print("Warning: --npu specified but NPU support is unavailable.")
-            print("This could be due to:")
-            print("1. Ascend-specific PyTorch not installed")
-            print("2. No Ascend NPU devices detected")
-            print("3. NPU drivers not properly configured")
-            print("Falling back to CUDA/CPU...")
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            local_rank = 0
+        # Pin this process to the given NPU
+        torch.npu.set_device(local_rank)
+        # Use CUDA device identifier so torch.device recognizes it
+        device = torch.device(f"cuda:{local_rank}")
     else:
+        # Fallback to GPU or CPU
+        local_rank = 0
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     print(f"Using device: {device}")
 
     # Get basis from filename
@@ -275,7 +277,15 @@ if __name__ == "__main__":
     tr_ds = torch.utils.data.Subset(dataset, idx[:split])
     va_ds = torch.utils.data.Subset(dataset, idx[split:])
     
-    tr_loader = DataLoader(tr_ds, batch_size=args.batch_size, shuffle=True)
+    sampler = DistributedSampler(tr_ds) if dist.is_initialized() else None
+    tr_loader = DataLoader(
+        tr_ds,
+        batch_size=args.batch_size,
+        sampler=sampler,
+        shuffle=(sampler is None),
+        num_workers=4,
+        pin_memory=True
+    )
     va_loader = DataLoader(va_ds, batch_size=args.batch_size)
 
     (x0, _, _), _ = dataset[0]
@@ -285,23 +295,14 @@ if __name__ == "__main__":
     
     print(f"Rounds={R} Stabilisers={S} Features={F} grid={d}×{d}")
     
-    model = AlphaQubitDecoder(F, 128, S, grid_size)
-    
-    if args.npu and hasattr(torch, "npu") and torch.npu.is_available():
-        dist.init_process_group("hccl",
-                                rank=int(os.getenv("LOCAL_RANK", 0)),
-                                world_size=int(os.getenv("WORLD_SIZE", 1)))
-        model.to(device)
-        if dist.get_world_size() > 1:
-            model = torch.nn.parallel.DistributedDataParallel(
-                model, device_ids=[int(os.getenv("LOCAL_RANK", 0))]
-            )
-    else:
-        model.to(device)
-        if not args.npu and torch.cuda.device_count() > 1:
-            print(f"Using {torch.cuda.device_count()} GPUs!")
-            model = nn.DataParallel(model)
-    
+    model = AlphaQubitDecoder(F, 128, S, grid_size).to(device)
+    if dist.is_initialized():
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            broadcast_buffers=False
+        )
+
     # Generate model save path from input file name
     model_save_path = get_model_name_from_path(args.npz_file)
     
