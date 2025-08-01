@@ -15,10 +15,6 @@ import torch
 import time
 from datetime import datetime, timedelta
 
-# Set environment variables to fix common CPU tensor operation issues
-os.environ['MKL_THREADING_LAYER'] = 'GNU'
-os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
-
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     ndim = x.ndim
     assert 0 <= 1 < ndim
@@ -101,12 +97,12 @@ class ReadoutNetwork(nn.Module):
             nn.Linear(hidden_dim, 1)
         )
 
-        # Initialize with smaller values to avoid numerical issues
-        nn.init.xavier_uniform_(self.conv.weight, gain=0.1)
+        # Initialize
+        nn.init.xavier_uniform_(self.conv.weight)
         nn.init.constant_(self.conv.bias, 0)
         for layer in self.mlp:
             if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight, gain=0.1)
+                nn.init.xavier_uniform_(layer.weight)
                 nn.init.constant_(layer.bias, 0)
 
     def forward(self, x, basis):
@@ -120,26 +116,16 @@ class ReadoutNetwork(nn.Module):
         # Convolution
         x = self.conv(x).permute(0, 2, 3, 1)  # [B, d, d, D]
         
-        # Line-wise readout - vectorized approach
+        # Line-wise readout
         outputs = []
         for i in range(B):
-            if basis[i].item() == 0:  # X basis
+            if basis[i] == 0:  # X basis
                 lines = x[i].mean(dim=1)  # [d, D]
             else:  # Z basis
                 lines = x[i].mean(dim=0)  # [d, D]
-            
-            # Ensure lines has the correct shape for the MLP
-            if lines.dim() == 1:
-                lines = lines.unsqueeze(0)  # Add batch dimension if needed
-            
-            # Apply MLP and handle potential shape issues
-            logits = self.mlp(lines)  # [d, 1] or [1, 1]
-            if logits.dim() > 1:
-                logits = logits.squeeze(-1)  # Remove last dimension if it's 1
-            if logits.dim() > 0:
-                outputs.append(logits.mean())
-            else:
-                outputs.append(logits)
+                
+            logits = self.mlp(lines).squeeze()  # [d]
+            outputs.append(logits.mean())
             
         return torch.stack(outputs)
 
@@ -206,32 +192,18 @@ def train(model, tr_loader, va_loader, epochs, lr, device, model_save_path):
 
         pbar = tqdm(tr_loader, desc=f"Epoch {epoch}/{epochs}")
         for (xb, basis, mask), yb in pbar:
-            try:
-                xb, basis, mask, yb = xb.to(device), basis.to(device), mask.to(device), yb.to(device)
-                
-                # Ensure tensors are contiguous and properly formatted
-                xb = xb.contiguous()
-                basis = basis.contiguous()
-                mask = mask.contiguous()
-                yb = yb.contiguous()
-                
-                optimizer.zero_grad()
-                outputs = model(xb, basis, mask)
-                loss = criterion(outputs, yb)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                scheduler.step()
-                
-                total_loss += loss.item()
-                pbar.set_postfix(loss=loss.item())
-                
-            except RuntimeError as e:
-                print(f"\nError during training: {e}")
-                print(f"Tensor shapes - xb: {xb.shape}, basis: {basis.shape}, mask: {mask.shape}, yb: {yb.shape}")
-                print(f"Tensor dtypes - xb: {xb.dtype}, basis: {basis.dtype}, mask: {mask.dtype}, yb: {yb.dtype}")
-                raise e
-                
+            xb, basis, mask, yb = xb.to(device), basis.to(device), mask.to(device), yb.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(xb, basis, mask)
+            loss = criterion(outputs, yb)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
+            
+            total_loss += loss.item()
+            pbar.set_postfix(loss=loss.item())
             current_time = datetime.now()
             if current_time - last_save_time >= timedelta(minutes=10):
                 torch.save(model.state_dict(), model_save_path)
@@ -310,25 +282,7 @@ if __name__ == "__main__":
     
     print(f"Rounds={R} Stabilisers={S} Features={F} grid={d}×{d}")
     
-    # Force CPU execution with safer settings
-    if device.type == 'cpu':
-        torch.set_num_threads(1)  # Use single thread to avoid MKL issues
-        torch.backends.mkldnn.enabled = False  # Disable MKL-DNN
-    
     model = AlphaQubitDecoder(F, 128, S, grid_size)
-    
-    # Test model with dummy data to catch issues early
-    try:
-        dummy_x = torch.randn(2, R, S, F).to(device)
-        dummy_basis = torch.randint(0, 2, (2,)).to(device)
-        dummy_mask = torch.zeros(2, S).to(device)
-        with torch.no_grad():
-            test_output = model(dummy_x, dummy_basis, dummy_mask)
-        print(f"Model test successful, output shape: {test_output.shape}")
-    except Exception as e:
-        print(f"Model test failed: {e}")
-        print("Adjusting model configuration...")
-        
     if args.npu and hasattr(torch, "npu"):
         npu_count = getattr(torch.npu, "device_count", lambda: 1)()
         if npu_count > 1:
