@@ -24,6 +24,8 @@ source venv/bin/activate
 # 安装依赖
 pip install --upgrade pip
 pip install numpy scipy stim pyyaml torch
+
+# 如需在华为 Ascend NPU 上训练，请安装带有 `torch.npu` 的 PyTorch 发行版并根据官方文档完成驱动配置。
 ```
 
 ## 仓库结构
@@ -86,6 +88,24 @@ python ai_models/decode.py \
 ```bash
 python plot_alphaqubit_results.py --input results/metrics.json
 ```
+
+## 全流程示例：从噪声文件生成到 NPU 上的全规模训练
+
+1. **生成噪声样本**  
+   使用 `run_create_all_samples.py` 调用 `google_qec_simulator` 为 `simulated_data/` 下的每个电路生成噪声 `.npz` 文件：
+   ```bash
+   python run_create_all_samples.py
+   ```
+
+2. **在 NPU 上训练所有样本**  
+   在安装了 Ascend PyTorch（支持 `torch.npu`）的环境中运行：
+   ```bash
+   python run_training_all.py --npu
+   ```
+   该脚本会遍历 `simulated_data/*.npz`，并对每个文件执行 `ai_models/model_mla.py` 训练；当检测到多块 NPU 时，会自动将任务分配到所有设备，实现全规模并行训练。
+
+3. **解码与评估**  
+   训练完成后，可继续使用前述的 `ai_models/decode.py` 及可视化脚本对模型性能进行评估与展示。
 
 ## 配置
 
