@@ -1,2 +1,4 @@
 # SI1000 noise parameters
 p: 0.001  # Base error rate
+distance: 3
+rounds: 25

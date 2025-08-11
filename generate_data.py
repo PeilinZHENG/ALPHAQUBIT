@@ -17,12 +17,12 @@ def main(model_type: str, num_samples: int, basis: str):
     if model_type == "dem":
         syndromes, logicals = generate_dem_data(num_samples, config)
     elif model_type == "si1000":
-        circuit = si1000_noise_model(config["p"])
+        circuit = si1000_noise_model(config)
         sampler = circuit.compile_detector_sampler()
         syndromes, logicals = sampler.sample(num_samples, separate_observables=True)
     elif model_type == "pauli_plus":
         sim = PauliPlusSimulator(config, basis)
-        sampler = sim.circuit.compile_detector_sampler()      # or however your class exposes it
+        sampler = sim.circuit.compile_detector_sampler()
         syndromes, logicals = sampler.sample(num_samples, separate_observables=True)
 
     else:
