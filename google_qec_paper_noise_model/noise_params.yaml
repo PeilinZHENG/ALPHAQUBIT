@@ -1,5 +1,5 @@
 # Noise parameters for different noise models.
-version: 2.0
+version: 3.0
 
 processors:
   # A simple circuit-level depolarizing model.
@@ -9,9 +9,29 @@ processors:
     p_reset: 0.005
     p_meas: 0.005
 
-  # The "Pauli+" model, including depolarization, leakage, and crosstalk.
-  # Aligned with the implementation in simulator/pauli_plus_simulator.py
+  # The "Pauli+" model, as implemented in simulator/pauli_plus_simulator.py
   pauli_plus:
     depolarization: 0.001
     leakage_rate: 0.0005
     cross_talk: 0.01
+
+  # A detailed physical noise model aligned with the 72-qubit processor
+  # from the paper "Learning high-accuracy error decoding for quantum processors".
+  # Parameters are from Table S4 of the supplementary information ("this work" column).
+  72_qubit_paper_aligned:
+    gate_errors:
+      cz_total_error: 3.5e-3
+      cz_crosstalk: 5.5e-4
+      cz_leakage_prob: 2.0e-4
+      sq_gates: 6.2e-4
+    idle_errors:
+      data_idle: 0.9e-2
+      leakage_heating: 2.5e-4
+    readout_reset:
+      reset: 1.5e-3
+      readout: 0.8e-2
+    decoherence:
+      t1_us: 73
+      t2_cpmg_us: 80
+    timing:
+      cycle_time_ns: 1076

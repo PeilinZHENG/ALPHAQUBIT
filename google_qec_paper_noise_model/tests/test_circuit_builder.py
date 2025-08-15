@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 Integration tests for the circuit_builder module, specifically for the
-"Pauli+" noise model.
+physical noise model aligned with the Nature paper.
 """
 
 import pytest
+import stim
 from .. import circuit_builder
 
 
@@ -12,7 +13,9 @@ def test_circuit_builder_builds_a_circuit():
     """
     Tests that the builder creates a stim.Circuit object without errors.
     """
-    builder = circuit_builder.SurfaceCodeCircuitBuilder(distance=3, rounds=2)
+    builder = circuit_builder.SurfaceCodeCircuitBuilder(
+        distance=3, rounds=2, processor="72_qubit_paper_aligned"
+    )
     circuit = builder.build_circuit()
 
     assert circuit is not None
@@ -22,9 +25,11 @@ def test_circuit_builder_builds_a_circuit():
 def test_circuit_contains_expected_instructions():
     """
     Tests that the generated circuit contains the expected types of instructions
-    for the Pauli+ noise model.
+    for the physical noise model.
     """
-    builder = circuit_builder.SurfaceCodeCircuitBuilder(distance=3, rounds=2)
+    builder = circuit_builder.SurfaceCodeCircuitBuilder(
+        distance=3, rounds=2, processor="72_qubit_paper_aligned"
+    )
     circuit = builder.build_circuit()
 
     circuit_str = str(circuit)
@@ -38,35 +43,45 @@ def test_circuit_contains_expected_instructions():
     assert "OBSERVABLE_INCLUDE" in circuit_str
 
     # Check for our injected noise channels
-    assert "DEPOLARIZE1" in circuit_str  # From after_clifford_depolarization
-    assert "DEPOLARIZE2" in circuit_str  # From crosstalk
-    assert "PAULI_CHANNEL_2" in circuit_str  # From leakage
+    assert "DEPOLARIZE1" in circuit_str
+    assert "DEPOLARIZE2" in circuit_str
+    assert "PAULI_CHANNEL_2" in circuit_str
+    assert "X_ERROR" in circuit_str
 
 
 def test_circuit_stats_are_reasonable():
     """
     Checks the stats of a small generated circuit to ensure the number of
-    noise operations is reasonable with the Pauli+ model.
+    noise operations is reasonable with the physical noise model.
     """
     distance = 3
     rounds = 2
-    builder = circuit_builder.SurfaceCodeCircuitBuilder(distance=distance, rounds=rounds)
+    builder = circuit_builder.SurfaceCodeCircuitBuilder(
+        distance=distance, rounds=rounds, processor="72_qubit_paper_aligned"
+    )
     circuit = builder.build_circuit()
+
+    ideal_circuit = stim.Circuit.generated(
+        "surface_code:rotated_memory_z",
+        rounds=rounds,
+        distance=distance,
+    )
 
     def count_ops(c, name):
         return sum(1 for op in c if op.name == name)
 
-    # Count two-qubit gates in the noisy circuit
-    num_two_qubit_gates = count_ops(circuit, "CX") + count_ops(circuit, "CZ")
+    # Check reset and measurement noise
+    assert count_ops(circuit, "X_ERROR") == (
+        count_ops(ideal_circuit, "R") + count_ops(ideal_circuit, "M")
+    )
 
-    # Check that leakage channels are added for each 2Q gate
+    # Check two-qubit gate noise
+    num_two_qubit_gates = count_ops(ideal_circuit, "CX") + count_ops(ideal_circuit, "CZ")
+    assert count_ops(circuit, "DEPOLARIZE2") == num_two_qubit_gates
     assert count_ops(circuit, "PAULI_CHANNEL_2") == num_two_qubit_gates
 
-    # Check that crosstalk and depolarization channels are added for each 2Q gate.
-    # The `after_clifford_depolarization` adds one DEPOLARIZE2, and the
-    # crosstalk implementation adds another one.
-    assert count_ops(circuit, "DEPOLARIZE2") == 2 * num_two_qubit_gates
-
-    # Check that DEPOLARIZE1 is present for single-qubit gates
-    # The exact number is complex to calculate, so we check for presence
-    assert count_ops(circuit, "DEPOLARIZE1") > 0
+    # Check single-qubit gate noise
+    num_single_qubit_gates = sum(
+        1 for op in ideal_circuit if op.name in ["H", "S", "S_DAG"]
+    )
+    assert count_ops(circuit, "DEPOLARIZE1") == num_single_qubit_gates

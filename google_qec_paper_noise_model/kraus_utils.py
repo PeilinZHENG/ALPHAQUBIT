@@ -10,11 +10,25 @@ used to construct detailed noise models for quantum circuits.
 import numpy as np
 from scipy.linalg import sqrtm
 
-# Pauli matrices
+# Pauli matrices (2x2 for qubits)
 PAULI_I = np.array([[1, 0], [0, 1]], dtype=complex)
 PAULI_X = np.array([[0, 1], [1, 0]], dtype=complex)
 PAULI_Y = np.array([[0, -1j], [1j, 0]], dtype=complex)
 PAULI_Z = np.array([[1, 0], [0, -1]], dtype=complex)
+
+# Qutrit operators (3x3 for handling leakage to |2>)
+QUTRIT_I = np.eye(3, dtype=complex)
+# Generalized Gell-Mann matrices can be used, but for simple transitions,
+# projection operators are more direct.
+P0 = np.array([[1, 0, 0], [0, 0, 0], [0, 0, 0]], dtype=complex)
+P1 = np.array([[0, 0, 0], [0, 1, 0], [0, 0, 0]], dtype=complex)
+P2 = np.array([[0, 0, 0], [0, 0, 0], [0, 0, 1]], dtype=complex)
+
+# Transition operators
+P10 = np.array([[0, 1, 0], [0, 0, 0], [0, 0, 0]], dtype=complex) # |0><1|
+P01 = P10.T.conj()                                             # |1><0|
+P21 = np.array([[0, 0, 0], [0, 0, 1], [0, 0, 0]], dtype=complex) # |1><2|
+P12 = P21.T.conj()                                             # |2><1|
 
 
 def kraus_amplitude_damping(time: float, t1: float) -> list[np.ndarray]:
@@ -165,3 +179,42 @@ def combine_kraus_channels(
         A new list of Kraus operators for the combined channel.
     """
     return [np.dot(k2, k1) for k2 in channel2 for k1 in channel1]
+
+
+def kraus_heating_to_2(prob: float) -> list[np.ndarray]:
+    """
+    Generates Kraus operators for a heating channel from |1> to |2>.
+    This is a simplified model for leakage heating.
+
+    Args:
+        prob: The probability of the |1> -> |2> transition.
+
+    Returns:
+        A list of Kraus operators [E0, E1].
+    """
+    # Operator for the transition |1> -> |2>
+    e1 = np.sqrt(prob) * P12.T.conj() # This is |2><1|
+    # Operator for remaining in the subspace spanned by |0> and |1>
+    e0 = sqrtm(QUTRIT_I - e1.T.conj() @ e1)
+    return [e0, e1]
+
+
+def kraus_cz_leakage(prob: float) -> list[np.ndarray]:
+    """
+    Generates Kraus operators for dephasing-induced leakage during a CZ gate,
+    specifically the |11> -> |02> transition.
+
+    Args:
+        prob: The probability of this leakage event.
+
+    Returns:
+        A list of Kraus operators for the two-qutrit system.
+    """
+    # Projector for the |11> state
+    p11 = np.kron(P1, P1)
+    # Transition operator for |02><11|
+    t_02_11 = np.kron(P01.T.conj(), P21.T.conj())
+
+    e1 = np.sqrt(prob) * t_02_11
+    e0 = sqrtm(np.eye(9, dtype=complex) - e1.T.conj() @ e1)
+    return [e0, e1]
