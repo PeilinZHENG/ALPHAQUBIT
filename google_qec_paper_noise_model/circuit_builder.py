@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Builds a stim.Circuit for a surface code experiment with a circuit-level
-depolarizing noise model.
+Builds a stim.Circuit for a surface code experiment with a "Pauli+" noise model.
 
-This module uses the noise parameters defined in the YAML configuration
-files to construct a noisy circuit based on a standard depolarizing model.
+This module implements the "Pauli+" noise model, which includes depolarization
+after all Clifford gates, and additional leakage and crosstalk noise after
+two-qubit gates. The implementation is aligned with the one found in the
+`simulator/pauli_plus_simulator.py` file in this repository.
 """
 
 from pathlib import Path
@@ -17,22 +18,16 @@ CONFIG_DIR = Path(__file__).parent
 
 class SurfaceCodeCircuitBuilder:
     """
-    Constructs a noisy stim.Circuit for a surface code experiment.
+    Constructs a noisy stim.Circuit for a surface code experiment using the
+    "Pauli+" noise model.
     """
 
-    def __init__(self, distance: int, rounds: int, processor: str = "uniform_depolarizing"):
+    def __init__(self, distance: int, rounds: int, basis: str = 'Z', processor: str = "pauli_plus"):
         self.distance = distance
         self.rounds = rounds
+        self.basis = basis.lower()
         self.processor_name = processor
         self.noise_params = self._load_noise_params()
-
-    def _get_data_qubit_coords(self) -> list[complex]:
-        """Returns a list of complex coordinates for the data qubits."""
-        data_qubits = []
-        for r in range(self.distance):
-            for c in range(self.distance):
-                data_qubits.append(complex(2 * r + 1, 2 * c + 1))
-        return data_qubits
 
     def _load_noise_params(self) -> dict:
         """Loads the noise parameters for the specified processor."""
@@ -41,84 +36,60 @@ class SurfaceCodeCircuitBuilder:
             all_params = yaml.safe_load(f)
         return all_params["processors"][self.processor_name]
 
-    def _add_noise_to_circuit(self, ideal_circuit: stim.Circuit) -> stim.Circuit:
-        """
-        Iterates through an ideal circuit and injects a circuit-level
-        depolarizing noise model.
-        """
-        noisy_circuit = stim.Circuit()
-        p_gate = self.noise_params["p_gate"]
-        p_meas = self.noise_params["p_meas"]
-        p_reset = self.noise_params["p_reset"]
-        p_idle = self.noise_params["p_idle"]
+    def _attach_noise_to_two_qubit_gates(self, circuit: stim.Circuit) -> stim.Circuit:
+        """Insert leakage and cross-talk noise after each two-qubit gate."""
+        noisy = stim.Circuit()
+        leakage_rate = self.noise_params["leakage_rate"]
+        cross_talk = self.noise_params["cross_talk"]
 
-        # Build a map from complex coordinates to integer indices from the ideal circuit
-        coord_to_index = {}
-        for instruction in ideal_circuit:
-            if instruction.name == "QUBIT_COORDS":
-                coords = instruction.gate_args_copy()
-                qubit_index = instruction.targets_copy()[0].value
-                coord_to_index[complex(coords[0], coords[1])] = qubit_index
-
-        # Get the integer indices for all data qubits
-        data_qubit_coords = self._get_data_qubit_coords()
-        data_qubit_indices = [
-            coord_to_index[c] for c in data_qubit_coords if c in coord_to_index
-        ]
-
-        for instruction in ideal_circuit:
-            targets = [t.value for t in instruction.targets_copy()]
-            gate_type = instruction.name
-
-            # --- Handle Pre-Gate Noise (e.g., Measurement) ---
-            if gate_type == "M":
-                noisy_circuit.append("X_ERROR", targets, p_meas)
-
-            # --- Add the Gate itself ---
-            noisy_circuit.append(instruction)
-
-            # --- Handle Post-Gate Noise ---
-            if gate_type in ["H", "S", "S_DAG"]:
-                noisy_circuit.append("DEPOLARIZE1", targets, p_gate)
-            elif gate_type == "CX":
-                noisy_circuit.append("DEPOLARIZE2", targets, p_gate)
-            elif gate_type == "R":
-                noisy_circuit.append("X_ERROR", targets, p_reset)
-            elif gate_type == "SHIFT_COORDS":
-                # This instruction reliably marks the end of a full stabilizer cycle.
-                # We apply idle noise to all data qubits here.
-                if data_qubit_indices:
-                    noisy_circuit.append("DEPOLARIZE1", data_qubit_indices, p_idle)
-
-        return noisy_circuit
+        for inst in circuit:
+            noisy.append(inst)
+            if inst.name in ("CX", "CZ"):
+                targets = [t.value for t in inst.targets_copy()]
+                # Leakage modeled as single-qubit Pauli errors on the target qubit
+                noisy.append_operation(
+                    "PAULI_CHANNEL_2",
+                    targets,
+                    [
+                        leakage_rate / 3,  # IX
+                        leakage_rate / 3,  # IY
+                        leakage_rate / 3,  # IZ
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    ],
+                )
+                # Crosstalk modeled as a two-qubit depolarizing channel
+                noisy.append_operation("DEPOLARIZE2", targets, cross_talk)
+        return noisy
 
     def build_circuit(self) -> stim.Circuit:
         """
-        Builds the full, noisy stim.Circuit by adding noise to a
-        stim-generated ideal circuit.
+        Builds the full, noisy stim.Circuit for the Pauli+ model.
         """
-        # 1. Generate a perfect, noiseless surface code circuit using stim.
-        ideal_circuit = stim.Circuit.generated(
-            "surface_code:rotated_memory_z",
+        # 1. Generate a surface code circuit with depolarization after each Clifford gate.
+        depolarization = self.noise_params["depolarization"]
+        circuit = stim.Circuit.generated(
+            f"surface_code:rotated_memory_{self.basis}",
             rounds=self.rounds,
             distance=self.distance,
+            after_clifford_depolarization=depolarization,
         )
 
-        # 2. Add our custom noise model to the ideal circuit.
-        noisy_circuit = self._add_noise_to_circuit(ideal_circuit)
+        # 2. Attach additional leakage and crosstalk noise to two-qubit gates.
+        noisy_circuit = self._attach_noise_to_two_qubit_gates(circuit)
 
         return noisy_circuit
 
 
 if __name__ == '__main__':
     # Example usage:
-    builder = SurfaceCodeCircuitBuilder(distance=3, rounds=10)
+    builder = SurfaceCodeCircuitBuilder(distance=3, rounds=10, basis='z')
 
     # Load parameters
-    p_gate = builder.noise_params["p_gate"]
-    p_idle = builder.noise_params["p_idle"]
+    depolarization = builder.noise_params["depolarization"]
+    leakage = builder.noise_params["leakage_rate"]
+    crosstalk = builder.noise_params["cross_talk"]
     print(f"Loaded {builder.processor_name} processor params.")
-    print(f"p_gate: {p_gate}, p_idle: {p_idle}")
+    print(f"Depolarization: {depolarization}, Leakage: {leakage}, Crosstalk: {crosstalk}")
 
     # Build the noisy circuit
     my_circuit = builder.build_circuit()
