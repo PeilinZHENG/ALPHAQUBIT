@@ -1,0 +1,20 @@
+# Defines the sequence and duration of operations within one surface code cycle.
+# Timings are placeholders and should be filled from the paper's SI.
+version: 0.1
+
+# The cycle is defined as a list of operations.
+# Each operation has a name and a duration in nanoseconds.
+# The order in this list defines the execution order.
+cycle:
+  - name: '1Q_GATES'
+    duration: 25
+  - name: 'CZ_GATES'
+    duration: 50
+  - name: 'DYNAMICAL_DECOUPLING' # Placeholder for DD sequence
+    duration: 100
+  - name: 'MEASUREMENT'
+    duration: 400
+  - name: 'RESET'
+    duration: 100
+  - name: 'DQLR' # Data-Qubit Leakage Removal
+    duration: 150

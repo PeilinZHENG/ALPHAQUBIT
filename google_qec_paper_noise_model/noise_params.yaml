@@ -1,0 +1,53 @@
+# Noise parameters extracted from Google's "Quantum error correction below the surface code threshold" paper.
+# All values are placeholders and need to be filled in from the supplementary information (SI) of the paper.
+# Provenance: Link to paper/SI will be added here.
+version: 0.1
+
+processors:
+  seventy_two_qubit:
+    t1_mean: 20e-6  # T1 time in seconds (placeholder)
+    t2_mean: 30e-6  # T2 time in seconds (placeholder)
+    gate_times:
+      single_qubit: 25e-9  # 25 ns (placeholder)
+      cz: 50e-9           # 50 ns (placeholder)
+    error_rates:
+      single_qubit_pauli: 0.001 # Placeholder
+      cz_pauli: 0.005           # Placeholder
+    stray_interaction:
+      zz_strength: 0.1 # Placeholder for ZZ interaction strength
+      swap_like: 0.05  # Placeholder for swap-like error component
+    measurement:
+      misclassification_matrix:
+        p0_given_1: 0.03 # P(readout=0 | state=1)
+        p1_given_0: 0.02 # P(readout=1 | state=0)
+      idle_duration: 500e-9 # Placeholder
+    leakage_heating:
+      leakage_rate_1_to_2: 0.001 # Placeholder
+      heating_rate_0_to_1: 0.0005 # Placeholder
+      reset_error_rate: 0.005 # Placeholder for probability of ending in |1> after reset
+
+  one_hundred_five_qubit:
+    t1_mean: 25e-6
+    t2_mean: 35e-6
+    gate_times:
+      single_qubit: 25e-9
+      cz: 50e-9
+    error_rates:
+      single_qubit_pauli: 0.0008
+      cz_pauli: 0.004
+      # Per-edge calibrations would be stored here, e.g.:
+      # cz_pauli_edge_1_2: 0.0038
+    stray_interaction:
+      zz_strength: 0.08
+      swap_like: 0.04
+    measurement:
+      misclassification_matrix:
+        p0_given_1: 0.025
+        p1_given_0: 0.015
+      idle_duration: 500e-9
+    leakage_heating:
+      leakage_rate_1_to_2: 0.0008
+      heating_rate_0_to_1: 0.0004
+      reset_error_rate: 0.005 # Placeholder for probability of ending in |1> after reset
+    dqlr:
+      efficiency: 0.9 # Placeholder for Data-Qubit Leakage Removal efficiency
