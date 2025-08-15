@@ -36,24 +36,21 @@ def test_circuit_contains_expected_instructions():
     assert "DETECTOR" in circuit_str
     assert "OBSERVABLE_INCLUDE" in circuit_str
 
-    # Check for our custom injected noise
-    assert "PAULI_CHANNEL_1" in circuit_str
-    assert "PAULI_CHANNEL_2" in circuit_str
-
-    # Check for measurement and reset noise
-    # We model this with X_ERROR for now
+    # Check for our injected noise channels
+    assert "DEPOLARIZE1" in circuit_str
+    assert "DEPOLARIZE2" in circuit_str
     assert "X_ERROR" in circuit_str
+
 
 def test_circuit_stats_are_reasonable():
     """
     Checks the stats of a small generated circuit to ensure the number of
-    operations is reasonable with the refactored noise model.
+    operations is reasonable with the new noise model.
     """
     distance = 3
     rounds = 2
     builder = circuit_builder.SurfaceCodeCircuitBuilder(distance=distance, rounds=rounds)
     circuit = builder.build_circuit()
-    circuit_str = str(circuit)
 
     ideal_circuit = circuit_builder.stim.Circuit.generated(
         "surface_code:rotated_memory_z",
@@ -61,19 +58,41 @@ def test_circuit_stats_are_reasonable():
         distance=distance,
     )
 
-    def count_ops(circuit, name):
-        return sum(1 for op in circuit if op.name == name)
+    def count_ops(c, name):
+        return sum(1 for op in c if op.name == name)
 
-    # The number of CXs and Hs should be the same as the ideal circuit.
+    # The number of core gate operations should be the same as the ideal circuit.
     assert count_ops(circuit, "CX") == count_ops(ideal_circuit, "CX")
     assert count_ops(circuit, "H") == count_ops(ideal_circuit, "H")
+    assert count_ops(circuit, "M") == count_ops(ideal_circuit, "M")
+    assert count_ops(circuit, "R") == count_ops(ideal_circuit, "R")
 
-    # The number of PAULI_CHANNEL_2 instructions should match the number of CXs.
-    assert circuit_str.count("PAULI_CHANNEL_2") == count_ops(ideal_circuit, "CX")
+    # Check gate noise channels
+    num_single_qubit_gates = sum(
+        1 for op in ideal_circuit if op.name in ["H", "S", "S_DAG"]
+    )
+    num_two_qubit_gates = count_ops(ideal_circuit, "CX")
 
-    # The number of PAULI_CHANNEL_1 instructions should match the number of Hs.
-    assert circuit_str.count("PAULI_CHANNEL_1") == count_ops(ideal_circuit, "H")
+    # Count DEPOLARIZE1 and DEPOLARIZE2 instructions associated with gates
+    gate_depolarize1_count = 0
+    gate_depolarize2_count = 0
+    for i, op in enumerate(circuit):
+        if i > 0:
+            prev_op = circuit[i-1]
+            if prev_op.name in ["H", "S", "S_DAG"] and op.name == "DEPOLARIZE1":
+                gate_depolarize1_count += 1
+            elif prev_op.name == "CX" and op.name == "DEPOLARIZE2":
+                gate_depolarize2_count += 1
 
-    # The number of DEPOLARIZE1 instructions should match the number of rounds - 1.
-    # (SHIFT_COORDS appears after round 1, not round 0).
-    assert circuit_str.count("DEPOLARIZE1") == rounds - 1
+    assert gate_depolarize1_count == num_single_qubit_gates
+    assert gate_depolarize2_count == num_two_qubit_gates
+
+    # Check reset and measurement noise
+    assert count_ops(circuit, "X_ERROR") == (
+        count_ops(ideal_circuit, "R") + count_ops(ideal_circuit, "M")
+    )
+
+    # Check idle noise (applied once per round, but not after the last round)
+    total_depolarize1 = count_ops(circuit, "DEPOLARIZE1")
+    idle_depolarize_count = total_depolarize1 - gate_depolarize1_count
+    assert idle_depolarize_count == max(0, rounds - 1)

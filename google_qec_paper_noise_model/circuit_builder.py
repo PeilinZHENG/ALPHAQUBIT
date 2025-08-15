@@ -1,20 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Builds a stim.Circuit for a surface code experiment with a paper-aligned
-noise model.
+Builds a stim.Circuit for a surface code experiment with a circuit-level
+depolarizing noise model.
 
-This module uses the detailed physical parameters and cycle schedule defined
-in the YAML configuration files to construct a noisy circuit. It uses the
-Kraus and Pauli twirling utilities to convert physical noise processes into
-stim-compatible Pauli error channels.
+This module uses the noise parameters defined in the YAML configuration
+files to construct a noisy circuit based on a standard depolarizing model.
 """
 
 from pathlib import Path
 import yaml
 import stim
-
-from . import kraus_utils
-from . import pauli_twirl
 
 # The path to the configuration files for this noise model.
 CONFIG_DIR = Path(__file__).parent
@@ -25,12 +20,11 @@ class SurfaceCodeCircuitBuilder:
     Constructs a noisy stim.Circuit for a surface code experiment.
     """
 
-    def __init__(self, distance: int, rounds: int, processor: str = "seventy_two_qubit"):
+    def __init__(self, distance: int, rounds: int, processor: str = "uniform_depolarizing"):
         self.distance = distance
         self.rounds = rounds
         self.processor_name = processor
         self.noise_params = self._load_noise_params()
-        self.cycle_schedule = self._load_cycle_schedule()
 
     def _get_data_qubit_coords(self) -> list[complex]:
         """Returns a list of complex coordinates for the data qubits."""
@@ -47,20 +41,16 @@ class SurfaceCodeCircuitBuilder:
             all_params = yaml.safe_load(f)
         return all_params["processors"][self.processor_name]
 
-    def _load_cycle_schedule(self) -> dict:
-        """Loads the cycle schedule definition."""
-        schedule_path = CONFIG_DIR / "cycle_schedule.yaml"
-        with open(schedule_path, 'r') as f:
-            schedule = yaml.safe_load(f)
-        return schedule["cycle"]
-
     def _add_noise_to_circuit(self, ideal_circuit: stim.Circuit) -> stim.Circuit:
         """
-        Iterates through an ideal circuit and injects a custom noise model.
-        This version uses a simplified, per-round idle noise model to avoid
-        the complexities and errors of per-gate idle timing.
+        Iterates through an ideal circuit and injects a circuit-level
+        depolarizing noise model.
         """
         noisy_circuit = stim.Circuit()
+        p_gate = self.noise_params["p_gate"]
+        p_meas = self.noise_params["p_meas"]
+        p_reset = self.noise_params["p_reset"]
+        p_idle = self.noise_params["p_idle"]
 
         # Build a map from complex coordinates to integer indices from the ideal circuit
         coord_to_index = {}
@@ -82,37 +72,23 @@ class SurfaceCodeCircuitBuilder:
 
             # --- Handle Pre-Gate Noise (e.g., Measurement) ---
             if gate_type == "M":
-                p_meas_err = self.noise_params["measurement"]["misclassification_matrix"]["p1_given_0"]
-                noisy_circuit.append("X_ERROR", targets, p_meas_err)
+                noisy_circuit.append("X_ERROR", targets, p_meas)
 
             # --- Add the Gate itself ---
             noisy_circuit.append(instruction)
 
             # --- Handle Post-Gate Noise ---
-            if gate_type == "CX":
-                p_2q = self.noise_params["error_rates"]["cz_pauli"] # Use cz_pauli as placeholder
-                noise = kraus_utils.kraus_depolarizing(p_2q, n_qubits=2)
-                noisy_gate = kraus_utils.combine_kraus_channels([kraus_utils.IDEAL_CX], noise)
-                pauli_vec = pauli_twirl.twirl_to_pauli_probs(noisy_gate, n_qubits=2)
-                noisy_circuit.append("PAULI_CHANNEL_2", targets, pauli_vec)
-
-            elif gate_type == "H":
-                p_1q = self.noise_params["error_rates"]["single_qubit_pauli"]
-                noise = kraus_utils.kraus_depolarizing(p_1q, n_qubits=1)
-                noisy_gate = kraus_utils.combine_kraus_channels([kraus_utils.IDEAL_H], noise)
-                pauli_vec = pauli_twirl.twirl_to_pauli_probs(noisy_gate, n_qubits=1)
-                noisy_circuit.append("PAULI_CHANNEL_1", targets, pauli_vec)
-
+            if gate_type in ["H", "S", "S_DAG"]:
+                noisy_circuit.append("DEPOLARIZE1", targets, p_gate)
+            elif gate_type == "CX":
+                noisy_circuit.append("DEPOLARIZE2", targets, p_gate)
             elif gate_type == "R":
-                p_reset_err = self.noise_params["leakage_heating"]["reset_error_rate"]
-                noisy_circuit.append("X_ERROR", targets, p_reset_err)
-
+                noisy_circuit.append("X_ERROR", targets, p_reset)
             elif gate_type == "SHIFT_COORDS":
                 # This instruction reliably marks the end of a full stabilizer cycle.
-                # We apply an approximate idle noise to all data qubits here.
-                idle_p1 = 0.0001
+                # We apply idle noise to all data qubits here.
                 if data_qubit_indices:
-                    noisy_circuit.append("DEPOLARIZE1", data_qubit_indices, idle_p1)
+                    noisy_circuit.append("DEPOLARIZE1", data_qubit_indices, p_idle)
 
         return noisy_circuit
 
@@ -139,12 +115,12 @@ if __name__ == '__main__':
     builder = SurfaceCodeCircuitBuilder(distance=3, rounds=10)
 
     # Load parameters
-    t1 = builder.noise_params["t1_mean"]
-    gate_time_cz = builder.noise_params["gate_times"]["cz"]
+    p_gate = builder.noise_params["p_gate"]
+    p_idle = builder.noise_params["p_idle"]
     print(f"Loaded {builder.processor_name} processor params.")
-    print(f"T1: {t1*1e6:.1f} us, CZ time: {gate_time_cz*1e9:.0f} ns")
+    print(f"p_gate: {p_gate}, p_idle: {p_idle}")
 
-    # Build the (placeholder) circuit
+    # Build the noisy circuit
     my_circuit = builder.build_circuit()
-    # print("\n--- Circuit Stats ---")
-    # print(my_circuit.stats())
+    print("\n--- Circuit Stats ---")
+    print(my_circuit.stats())
