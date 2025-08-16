@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Integration tests for the circuit_builder module, specifically for the
-physical noise model aligned with the Nature paper.
+approximated physical noise model.
 """
 
 import pytest
@@ -19,7 +19,7 @@ def test_circuit_builder_builds_a_circuit():
     circuit = builder.build_circuit()
 
     assert circuit is not None
-    assert isinstance(circuit, circuit_builder.stim.Circuit)
+    assert isinstance(circuit, stim.Circuit)
 
 
 def test_circuit_contains_expected_instructions():
@@ -52,7 +52,7 @@ def test_circuit_contains_expected_instructions():
 def test_circuit_stats_are_reasonable():
     """
     Checks the stats of a small generated circuit to ensure the number of
-    noise operations is reasonable with the physical noise model.
+    noise operations is reasonable with the approximated physical noise model.
     """
     distance = 3
     rounds = 2

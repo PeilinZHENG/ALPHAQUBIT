@@ -29,6 +29,44 @@ P10 = np.array([[0, 1, 0], [0, 0, 0], [0, 0, 0]], dtype=complex) # |0><1|
 P01 = P10.T.conj()                                             # |1><0|
 P21 = np.array([[0, 0, 0], [0, 0, 1], [0, 0, 0]], dtype=complex) # |1><2|
 P12 = P21.T.conj()                                             # |2><1|
+P20 = np.array([[0, 0, 1], [0, 0, 0], [0, 0, 0]], dtype=complex) # |0><2|
+P02 = P20.T.conj()                                             # |2><0|
+
+# Generalized Pauli Basis for a single qutrit
+# This basis spans the space of 3x3 matrices and is used for Pauli twirling
+# with leakage. The operators are chosen to be orthonormal w.r.t. Hilbert-Schmidt inner product.
+# Tr(A.dag * B) = d * delta_AB
+G1_I = P0 + P1  # Identity on computational subspace
+G1_X = P01 + P10
+G1_Y = -1j * P01 + 1j * P10
+G1_Z = P0 - P1
+G1_L02_X = P02 + P20 # Leakage <-> |0> (X-like)
+G1_L12_X = P12 + P21 # Leakage <-> |1> (X-like)
+G1_L02_Y = -1j * P02 + 1j * P20
+G1_L12_Y = -1j * P12 + 1j * P21
+G1_P2 = P2 # Projector onto leakage state |2>
+
+# Normalize the basis
+QUTRIT_BASIS = [
+    G1_I, G1_X, G1_Y, G1_Z,
+    G1_L02_X, G1_L12_X, G1_L02_Y, G1_L12_Y,
+    G1_P2
+]
+for i in range(len(QUTRIT_BASIS)):
+    op = QUTRIT_BASIS[i]
+    norm = np.sqrt(np.real(np.trace(op.conj().T @ op)))
+    if norm > 1e-9:
+        QUTRIT_BASIS[i] = op / norm
+
+QUTRIT_BASIS_LABELS = [
+    'I_c', 'X_c', 'Y_c', 'Z_c',
+    'L02_X', 'L12_X', 'L02_Y', 'L12_Y',
+    'P_2'
+]
+
+# Two-qutrit basis (81 operators)
+QUTRIT_2Q_BASIS = [np.kron(P1, P2) for P1 in QUTRIT_BASIS for P2 in QUTRIT_BASIS]
+QUTRIT_2Q_LABELS = [L1 + L2 for L1 in QUTRIT_BASIS_LABELS for L2 in QUTRIT_BASIS_LABELS]
 
 
 def kraus_amplitude_damping(time: float, t1: float) -> list[np.ndarray]:
@@ -218,3 +256,50 @@ def kraus_cz_leakage(prob: float) -> list[np.ndarray]:
     e1 = np.sqrt(prob) * t_02_11
     e0 = sqrtm(np.eye(9, dtype=complex) - e1.T.conj() @ e1)
     return [e0, e1]
+
+
+def kraus_from_pauli_probs(probs: list[float], n_qubits: int) -> list[np.ndarray]:
+    """
+    Creates a Kraus representation of a Pauli channel from a list of probabilities.
+    """
+    if n_qubits == 1:
+        basis = PAULI_1Q_BASIS
+        d = 4
+    elif n_qubits == 2:
+        basis = PAULI_2Q_BASIS
+        d = 16
+    else:
+        raise ValueError("Only 1 or 2 qubits are supported.")
+
+    if len(probs) != d:
+        raise ValueError(f"Length of probs should be {d}")
+
+    kraus_ops = [np.sqrt(p) * op for p, op in zip(probs, basis) if p > 0]
+    return kraus_ops
+
+
+def kraus_dqlr(prob_matrix: np.ndarray) -> list[np.ndarray]:
+    """
+    Generates Kraus operators for the phenomenological DQLR channel.
+
+    Args:
+        prob_matrix: A 3x3 matrix where P_ij is the probability of
+                     transitioning from state |j> to |i>.
+
+    Returns:
+        A list of Kraus operators.
+    """
+    kraus_ops = []
+    k_sum = np.zeros((3, 3), dtype=complex)
+    for i in range(3):
+        for j in range(3):
+            if prob_matrix[i, j] > 0:
+                op = np.zeros((3, 3), dtype=complex)
+                op[i, j] = 1.0 # |i><j|
+                k = np.sqrt(prob_matrix[i, j]) * op
+                kraus_ops.append(k)
+                k_sum += k.conj().T @ k
+
+    k0 = sqrtm(np.eye(3) - k_sum)
+    kraus_ops.insert(0, k0)
+    return kraus_ops
