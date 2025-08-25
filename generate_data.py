@@ -6,6 +6,7 @@ import numpy as np
 from simulator.dem_generator import generate_dem_data
 from simulator.si1000_generator import si1000_noise_model
 from simulator.pauli_plus_simulator import PauliPlusSimulator
+from google_qec_paper_noise_model.circuit_builder import SurfaceCodeCircuitBuilder
 
 def main(model_type: str, num_samples: int, basis: str):
     # Load configuration
@@ -23,6 +24,16 @@ def main(model_type: str, num_samples: int, basis: str):
     elif model_type == "pauli_plus":
         sim = PauliPlusSimulator(config, basis)
         sampler = sim.circuit.compile_detector_sampler()
+        syndromes, logicals = sampler.sample(num_samples, separate_observables=True)
+    elif model_type == "paper_aligned":
+        builder = SurfaceCodeCircuitBuilder(
+            distance=config["distance"],
+            rounds=config["rounds"],
+            basis=config.get("basis", basis),
+            processor=config.get("processor", "72_qubit_paper_aligned"),
+        )
+        circuit = builder.build_circuit()
+        sampler = circuit.compile_detector_sampler()
         syndromes, logicals = sampler.sample(num_samples, separate_observables=True)
 
     else:
@@ -47,7 +58,7 @@ def main(model_type: str, num_samples: int, basis: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate quantum error correction data")
     parser.add_argument("--model", 
-                      choices=["dem", "si1000", "pauli_plus"],
+                      choices=["dem", "si1000", "pauli_plus", "paper_aligned"],
                       required=True,
                       help="Type of noise model to generate")
     parser.add_argument("--samples",

@@ -55,6 +55,9 @@ python generate_data.py --model si1000 --samples 10000
 
 # 泄漏、串扰与软读出（Pauli+）
 python generate_data.py --model pauli_plus --samples 10000
+
+# 与论文对齐的物理噪声模型
+python generate_data.py --model paper_aligned --samples 10000
 ```
 
 生成的数据默认保存在 `output/` 目录。

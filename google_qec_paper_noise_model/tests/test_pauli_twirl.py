@@ -5,6 +5,7 @@ Unit tests for the pauli_twirl module.
 
 import numpy as np
 import pytest
+import itertools
 
 from .. import kraus_utils
 from .. import pauli_twirl
@@ -99,3 +100,19 @@ def test_pauli_basis_is_orthonormal():
             else:
                 # Should be 0 off the diagonal
                 assert abs(inner_product) < 1e-9, f"P_{i} and P_{j} are not orthogonal"
+
+
+def test_generalized_pauli_probs_match_leakysim():
+    """Cross-check GPT output against leakysim."""
+    prob = 0.02
+    kraus = kraus_utils.kraus_cz_leakage(prob)
+    ours = pauli_twirl.twirl_to_generalized_pauli_probs(kraus, n_qutrits=2)
+    try:  # pragma: no cover - environment dependent
+        import leakysim as _leaky
+    except ModuleNotFoundError:  # pragma: no cover
+        import leaky as _leaky
+    channel = _leaky.generalized_pauli_twirling(kraus, num_qubits=2, num_level=3, safety_check=False)
+    status = _leaky.LeakageStatus(status=[0, 0])
+    for p in ["".join(t) for t in itertools.product("IXYZ", repeat=2)]:
+        expected = channel.get_prob_from_to(status, status, p)
+        assert np.isclose(ours[p], expected, atol=1e-9)
