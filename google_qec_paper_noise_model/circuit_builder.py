@@ -9,8 +9,11 @@ from pathlib import Path
 import yaml
 import stim
 import numpy as np
-from . import kraus_utils
-import leakysim
+from . import kraus_utils, pauli_twirl
+try:
+    import leakysim
+except ModuleNotFoundError:  # pragma: no cover - fallback for newer package name
+    import leaky as leakysim
 
 # The path to the configuration files for this noise model.
 CONFIG_DIR = Path(__file__).parent
@@ -69,28 +72,23 @@ class SurfaceCodeCircuitBuilder:
             noisy_circuit.append(instruction)
 
             # --- Construct and add noise channel for this gate ---
-            # This is a simplified implementation of the full noise model.
-            # A complete implementation would require a more detailed model
-            # for combining channels and handling multi-level leakage.
-
             if gate_type in ["H", "S", "S_DAG"]:
-                # Single-qubit gate noise
-                depol_channel = kraus_utils.kraus_depolarizing(p_sq_gate_err, 1)
-                # In a full model, we would combine this with decoherence.
-                # For now, we apply them sequentially as an approximation.
-                noisy_circuit.append("DEPOLARIZE1", targets, p_sq_gate_err)
+                depol = kraus_utils.kraus_depolarizing(p_sq_gate_err, 1)
+                deco = kraus_utils.kraus_t1_t2_idle(time_1q, t1, t2)
+                channel = kraus_utils.combine_kraus_channels(deco, depol)
+                probs = pauli_twirl.twirl_to_pauli_probs(channel, 1)
+                noisy_circuit.append("PAULI_CHANNEL_1", targets, probs)
 
-            elif gate_type == "CX" or gate_type == "CZ":
-                # Two-qubit gate noise
-                # Approximation: apply component errors sequentially.
-                # 1. Crosstalk
-                noisy_circuit.append("DEPOLARIZE2", targets, p_cz_crosstalk)
-                # 2. Leakage, approximated as a Pauli channel
-                leakage_channel_probs = [
-                    0, p_cz_leakage / 3, p_cz_leakage / 3, p_cz_leakage / 3,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-                ]
-                noisy_circuit.append("PAULI_CHANNEL_2", targets, leakage_channel_probs[1:])
+            elif gate_type in ["CX", "CZ"]:
+                depol = kraus_utils.kraus_depolarizing(p_cz_crosstalk, 2)
+                deco1 = kraus_utils.kraus_t1_t2_idle(time_2q, t1, t2)
+                deco2 = kraus_utils.kraus_t1_t2_idle(time_2q, t1, t2)
+                deco = [np.kron(k1, k2) for k1 in deco1 for k2 in deco2]
+                channel = kraus_utils.combine_kraus_channels(deco, depol)
+                probs = pauli_twirl.twirl_to_pauli_probs(channel, 2)
+                noisy_circuit.append("PAULI_CHANNEL_2", targets, probs)
+                leakage_probs = [0, p_cz_leakage / 3, p_cz_leakage / 3, p_cz_leakage / 3] + [0] * 12
+                noisy_circuit.append("PAULI_CHANNEL_2", targets, leakage_probs[1:])
 
             elif gate_type == "M":
                 noisy_circuit.append("X_ERROR", targets, p_readout)

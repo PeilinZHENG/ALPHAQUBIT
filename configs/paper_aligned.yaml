@@ -1,0 +1,4 @@
+distance: 3
+rounds: 2
+basis: z
+processor: 72_qubit_paper_aligned

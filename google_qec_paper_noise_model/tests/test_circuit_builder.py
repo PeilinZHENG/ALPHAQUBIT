@@ -43,8 +43,7 @@ def test_circuit_contains_expected_instructions():
     assert "OBSERVABLE_INCLUDE" in circuit_str
 
     # Check for our injected noise channels
-    assert "DEPOLARIZE1" in circuit_str
-    assert "DEPOLARIZE2" in circuit_str
+    assert "PAULI_CHANNEL_1" in circuit_str
     assert "PAULI_CHANNEL_2" in circuit_str
     assert "X_ERROR" in circuit_str
 
@@ -77,11 +76,10 @@ def test_circuit_stats_are_reasonable():
 
     # Check two-qubit gate noise
     num_two_qubit_gates = count_ops(ideal_circuit, "CX") + count_ops(ideal_circuit, "CZ")
-    assert count_ops(circuit, "DEPOLARIZE2") == num_two_qubit_gates
-    assert count_ops(circuit, "PAULI_CHANNEL_2") == num_two_qubit_gates
+    assert count_ops(circuit, "PAULI_CHANNEL_2") == num_two_qubit_gates * 2
 
     # Check single-qubit gate noise
     num_single_qubit_gates = sum(
         1 for op in ideal_circuit if op.name in ["H", "S", "S_DAG"]
     )
-    assert count_ops(circuit, "DEPOLARIZE1") == num_single_qubit_gates
+    assert count_ops(circuit, "PAULI_CHANNEL_1") == num_single_qubit_gates
