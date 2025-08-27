@@ -1,5 +1,3 @@
- 
-
 # 1-qubit Pauli matrices
  
  
@@ -175,5 +173,4 @@ def gpt_single_qubit(kraus_ops: Iterable[np.ndarray]) -> Dict[str, float]:
     choi = _kraus_to_choi(list(kraus_ops))
     twirled = _twirl_choi_1q(choi)
     return _pauli_probs_from_twirled_choi_1q(twirled)
- 
- 
+
