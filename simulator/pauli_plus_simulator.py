@@ -1,4 +1,9 @@
+
 from typing import Any, Dict, List, Tuple
+
+
+import math
+
 import stim
 from google_qec_paper_noise_model.gpt import gpt_single_qubit, amp_phase_kraus
 
@@ -10,6 +15,8 @@ class PauliPlusSimulator:
         if self.basis not in ("X", "Z"):
             raise ValueError("basis must be 'X' or 'Z'")
 
+    def __init__(self, config: Dict, basis: str):
+
         self.distance = config.get("distance")
         self.rounds = config.get("rounds")
         if self.distance is None or self.rounds is None:
@@ -19,10 +26,31 @@ class PauliPlusSimulator:
         self.leakage_rate = config.get("leakage_rate", 0.01)
         self.cross_talk = config.get("cross_talk", 0.002)
 
+
         self.circuit = self._build_base_circuit(config, self.basis)
         # Backward compatible noise attachment after two-qubit gates
         self.circuit = self._attach_noise_to_two_qubit_gates(self.circuit)
         # paper-aligned injection is applied explicitly via apply_paper_aligned_noise(...)
+
+        self.basis = basis.upper()
+        if self.basis not in ("X", "Z"):
+            raise ValueError("basis must be 'X' or 'Z'")
+
+        self.circuit = self._build_noisy_circuit()
+        # If configs/paper_aligned.yaml was used or keys exist, allow in-place instrumentation.
+        if any(
+            k in config
+            for k in (
+                "T1_us",
+                "Tphi_us",
+                "p_cz_crosstalk_ZZ",
+                "p_cz_swap_like",
+                "p_cz_excess",
+            )
+        ):
+            # Do nothing here; paper-aligned code calls apply_paper_aligned_noise explicitly.
+            pass
+
 
     def _build_base_circuit(self, config: Dict, basis: str) -> stim.Circuit:
         circuit = stim.Circuit.generated(
@@ -63,18 +91,16 @@ class PauliPlusSimulator:
                 noisy.append_operation("DEPOLARIZE2", targets, self.cross_talk)
         return noisy
 
-    # ------------------------------------------------------------------
-    # Paper-aligned noise injection (channels + GPT; preserves detectors)
-    # ------------------------------------------------------------------
+
+ 
     def apply_paper_aligned_noise(self, config: Dict) -> None:
         """
-        Instrument the Stim circuit with paper-aligned GPT and correlated errors.
-        - 1Q gates: GPT(T1,Tphi) -> PAULI_CHANNEL_1(px,py,pz) after the gate + excess.
-        - Parallel-CZ windows: inject ZZ and swap-like (XX,YY) via CORRELATED_ERROR.
-        - CZ residuals: add local PAULI_CHANNEL_1 on both qubits.
-        - Readout/reset: model as X_ERROR before M and after R, respectively.
-        - Optional idle twirl at each TICK.
-        NOTE: Leakage/DQLR knobs are exposed and folded via GPT in this Stim path.
+        Instrument the existing Stim circuit with paper-aligned GPT and correlated errors.
+        - 1Q channels: GPT( T1, Tphi ) -> PAULI_CHANNEL_1(pX,pY,pZ) after 1Q gates.
+        - 2Q CZ windows: inject correlated ZZ & swap-like via CORRELATED_ERROR at TICK boundaries.
+        - Residuals: add 1Q PAULI_CHANNEL_1 on each CZ participant (p_1q_excess folded here).
+        Detector layout (DETECTOR/OBSERVABLE_INCLUDE/coords) is untouched.
+
         """
         cfg = config
         cycle_ns = float(cfg.get("cycle_ns", 1100.0))
@@ -85,6 +111,7 @@ class PauliPlusSimulator:
         p_idle_excess = float(cfg.get("p_idle_excess", 5e-4))
         twirl_idles_each_tick = bool(cfg.get("twirl_idles_each_tick", False))
         twirl_after_1q_gates = bool(cfg.get("twirl_after_1q_gates", True))
+ 
         p_readout = float(cfg.get("p_readout", 3e-3))
         p_reset = float(cfg.get("p_reset", 3e-3))
 
@@ -118,6 +145,52 @@ class PauliPlusSimulator:
             new_circuit.append_operation("PAULI_CHANNEL_1", [q], [px_, py_, pz_])
 
         def inject_cz_pair(a: int, b: int):
+ 
+
+        # GPT-twirled 1q probabilities from amplitude+phase damping over one cycle
+        p1 = gpt_single_qubit(amp_phase_kraus(dt_us=dt_us, T1_us=T1_us, Tphi_us=Tphi_us))
+        pX, pY, pZ = p1.get("X", 0.0), p1.get("Y", 0.0), p1.get("Z", 0.0)
+        # Fold 'excess' into evenly split XYZ
+        pX += p_1q_excess / 3.0
+        pY += p_1q_excess / 3.0
+        pZ += p_1q_excess / 3.0
+
+        # CZ correlated terms
+        p_cz_zz = float(cfg.get("p_cz_crosstalk_ZZ", 5e-4))
+        p_cz_swap = float(cfg.get("p_cz_swap_like", 5e-4))
+        p_cz_excess = float(cfg.get("p_cz_excess", 1e-3))  # additional 1q around CZ
+
+        ONE_Q_GATES = {
+            "H",
+            "X",
+            "Y",
+            "Z",
+            "S",
+            "SQRT_X",
+            "SQRT_Y",
+            "RX",
+            "RY",
+            "RZ",
+            # common aliases present in Stim circuits:
+            "H_XZ",
+            "H_YZ",
+            "T",
+            "SQRT_Z",
+        }
+        TWO_Q_CZ = {"CZ", "CNOT", "CX"}  # treat CNOT like CZ for error-injection purposes
+
+        new_circuit = stim.Circuit()
+        current_cz_pairs: List[Tuple[int, int]] = []
+        all_qubits_seen: set[int] = set()
+
+        def append_pauli_channel_1(q: int, px: float, py: float, pz: float):
+            # Stim's PAULI_CHANNEL_1 models a Pauli-mixture; keeps semantics exact vs X_ERROR/Y_ERROR/Z_ERROR
+            if px <= 0 and py <= 0 and pz <= 0:
+                return
+            new_circuit.append_operation("PAULI_CHANNEL_1", [q], [px, py, pz])
+
+        def inject_cz_correlated(a: int, b: int):
+ 
             # ZZ crosstalk
             if p_cz_zz > 0.0:
                 new_circuit.append_operation(
@@ -125,7 +198,9 @@ class PauliPlusSimulator:
                     [stim.target_pauli_z(a), stim.target_pauli_z(b)],
                     [p_cz_zz],
                 )
-            # swap-like ≈ equal XX and YY
+ 
+            # swap-like: approximate with equal XX and YY
+ 
             if p_cz_swap > 0.0:
                 new_circuit.append_operation(
                     "CORRELATED_ERROR",
@@ -137,6 +212,7 @@ class PauliPlusSimulator:
                     [stim.target_pauli_y(a), stim.target_pauli_y(b)],
                     [0.5 * p_cz_swap],
                 )
+ 
             # residual 1q around CZ
             if p_cz_excess > 0.0:
                 s = p_cz_excess / 3.0
@@ -168,10 +244,28 @@ class PauliPlusSimulator:
 
             if name in ONE_Q_GATES:
                 new_circuit.append_operation(name, targs, gargs)
+ 
+            # residual 1q around CZ (Pauli channel)
+            if p_cz_excess > 0.0:
+                s = p_cz_excess / 3.0
+                append_pauli_channel_1(a, s, s, s)
+                append_pauli_channel_1(b, s, s, s)
+
+        for inst in self.circuit:
+            name = inst.name
+            targs = inst.targets_copy()
+            gate_args = inst.gate_args_copy()
+
+            if name in ONE_Q_GATES:
+                # passthrough op
+                new_circuit.append_operation(name, targs, gate_args)
+                # 1q GPT injection
+ 
                 if twirl_after_1q_gates:
                     for t in targs:
                         if t.is_qubit_target:
                             q = t.value
+ 
                             seen_qubits.add(q)
                             add_pauli_ch1(q, px, py, pz)
                 continue
@@ -204,3 +298,59 @@ class PauliPlusSimulator:
         for a, b in current_cz_pairs:
             inject_cz_pair(a, b)
         self.circuit = new_circuit
+ 
+                            all_qubits_seen.add(q)
+                            append_pauli_channel_1(q, pX, pY, pZ)
+                continue
+
+            if name in TWO_Q_CZ:
+                # record pair inside current TICK window
+                qubits = [t.value for t in targs if t.is_qubit_target]
+                if len(qubits) == 2:
+                    a, b = qubits
+                    all_qubits_seen.update(qubits)
+                    current_cz_pairs.append((a, b))
+                # passthrough op
+                new_circuit.append_operation(name, targs, gate_args)
+                continue
+
+            if name == "TICK":
+                # end of window -> inject correlated CZ errors for all pairs collected
+                for (a, b) in current_cz_pairs:
+                    inject_cz_correlated(a, b)
+                current_cz_pairs.clear()
+                # Idle twirl on every seen qubit if requested
+                if twirl_idles_each_tick and all_qubits_seen:
+                    for q in sorted(all_qubits_seen):
+                        append_pauli_channel_1(
+                            q,
+                            pX + p_idle_excess / 3.0,
+                            pY + p_idle_excess / 3.0,
+                            pZ + p_idle_excess / 3.0,
+                        )
+                new_circuit.append_operation(name, targs, gate_args)
+                continue
+
+            # passthrough any other operation (DETECTOR, MPP, OBSERVABLE_INCLUDE, coords, etc.)
+            new_circuit.append_operation(name, targs, gate_args)
+
+        # Flush a last window if circuit doesn't end with TICK
+        for (a, b) in current_cz_pairs:
+            inject_cz_correlated(a, b)
+        self.circuit = new_circuit
+ 
+    def apply_paper_aligned_noise(self, config):
+        """Adjust noise parameters based on a paper-aligned configuration.
+
+        The paper-aligned model specifies detailed physical error rates. For the
+        purposes of this simulator we only map a small subset of those
+        parameters onto the existing depolarization, leakage, and cross-talk
+        knobs. Any parameters not present in ``config`` retain their existing
+        values.
+        """
+        self.depolarization = config.get("p_1q_excess", self.depolarization)
+        self.leakage_rate = config.get("p_cz_leak_11_to_02", self.leakage_rate)
+        self.cross_talk = config.get("p_cz_crosstalk_ZZ", self.cross_talk)
+        # Rebuild the circuit so that updated parameters take effect.
+        self.circuit = self._build_noisy_circuit()
+ 
