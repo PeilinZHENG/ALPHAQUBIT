@@ -16,7 +16,13 @@ dqlr_matrix:
   - [1.0, 0.0, 0.0]
   - [0.0, 1.0, 0.0]
   - [0.05, 0.90, 0.05]
-
+ 
+# Injection controls
+# Whether to add a PAULI_CHANNEL_1 idle twirl on all qubits at each TICK.
+twirl_idles_each_tick: false
+# If true, apply GPT-twirled 1Q noise after any recognized 1Q gate.
+twirl_after_1q_gates: true
+ 
 # CZ related
 p_cz_leak_11_to_02: 0.001
 p_cz_crosstalk_ZZ: 0.0005
@@ -27,3 +33,4 @@ p_leak_transport_12_to_30: 0.0005
 p_1q_excess: 0.0005
 p_cz_excess: 0.0010
 p_idle_excess: 0.0005
+ 
