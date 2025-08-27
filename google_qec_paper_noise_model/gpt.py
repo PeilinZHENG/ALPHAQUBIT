@@ -1,7 +1,36 @@
  
 from __future__ import annotations
-from typing import Dict, Iterable, List, Tuple, Optional
+import math
 import numpy as np
+from typing import Dict, Iterable, List, Tuple
+from .channels import amplitude_damping_kraus, dephasing_kraus
+from .gpta import twirl_to_pauli_channel
+
+
+def amp_phase_kraus(*, dt_us: float, T1_us: float, Tphi_us: float) -> List[np.ndarray]:
+    """Return Kraus ops for amplitude+phase damping over a time step."""
+    # amplitude damping strength parameter (tau)
+    tau = dt_us / T1_us
+    K_amp = amplitude_damping_kraus(tau)
+    # pure dephasing probability mapped to dephasing channel parameter
+    p_phase = 0.5 * (1 - math.exp(-dt_us / Tphi_us))
+    K_phase = dephasing_kraus(p_phase)
+    # Compose amplitude then phase: K = P * A
+    Ks: List[np.ndarray] = []
+    for A in K_amp:
+        for P in K_phase:
+            Ks.append(P @ A)
+    return Ks
+
+
+def gpt_single_qubit(Ks: List[np.ndarray]) -> Dict[str, float]:
+    """Twirl a 1-qubit channel to Pauli probabilities."""
+    probs, _ = twirl_to_pauli_channel(Ks, 1)
+    return {"I": float(probs[0]), "X": float(probs[1]), "Y": float(probs[2]), "Z": float(probs[3])}
+
+ 
+ 
+ 
 
 # Define Pauli matrices as numpy arrays for convenience
  
@@ -15,9 +44,7 @@ of "Quantum error correction below the surface code threshold":
 > each noise channel to a generalized Pauli channel that also includes leakage,
 > thereby making it compatible with Clifford simulation methods." (SI, IV.A.1)
 """
-from __future__ import annotations
-from typing import Dict, Iterable, List, Tuple
-import numpy as np
+
 
 # Single-qubit Pauli matrices in computational basis
  
@@ -134,5 +161,4 @@ def gpt_single_qubit(kraus_ops: Iterable[np.ndarray]) -> Dict[str, float]:
     choi = _kraus_to_choi(list(kraus_ops))
     twirled = _twirl_choi_1q(choi)
     return _pauli_probs_from_twirled_choi_1q(twirled)
- 
  
