@@ -59,3 +59,18 @@ class PauliPlusSimulator:
                 )
                 noisy.append_operation("DEPOLARIZE2", targets, self.cross_talk)
         return noisy
+
+    def apply_paper_aligned_noise(self, config):
+        """Adjust noise parameters based on a paper-aligned configuration.
+
+        The paper-aligned model specifies detailed physical error rates. For the
+        purposes of this simulator we only map a small subset of those
+        parameters onto the existing depolarization, leakage, and cross-talk
+        knobs. Any parameters not present in ``config`` retain their existing
+        values.
+        """
+        self.depolarization = config.get("p_1q_excess", self.depolarization)
+        self.leakage_rate = config.get("p_cz_leak_11_to_02", self.leakage_rate)
+        self.cross_talk = config.get("p_cz_crosstalk_ZZ", self.cross_talk)
+        # Rebuild the circuit so that updated parameters take effect.
+        self.circuit = self._build_noisy_circuit()
