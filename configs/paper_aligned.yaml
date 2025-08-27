@@ -54,3 +54,9 @@ decoder_inputs:
   use_soft_detection_events: true
   provide_intermediate_labels_in_pretrain_only: true
 
+# Injection controls
+# Whether to add a PAULI_CHANNEL_1 idle twirl on all qubits at each TICK.
+twirl_idles_each_tick: false
+# If true, apply GPT-twirled 1Q noise after any recognized 1Q gate.
+twirl_after_1q_gates: true
+
