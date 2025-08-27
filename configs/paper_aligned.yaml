@@ -1,56 +1,29 @@
-# Paper-aligned training & noise defaults.
-# Pretrain: SI1000 (circuit depolarizing), simplified I/Q, injected leakage before meas.
-# Finetune: Pauli+ (incl. cross-talk, leakage, DQLR), full I/Q with amp damping.
-# Sources: Nature main paper + Supplement (Methods).
-#
-# Pretrain (SI1000)
-si1000:
-  p: 0.001                # base error strength
-  weights:
-    meas_bitflip: 5.0     # 5p before measurement
-    reset_bitflip: 2.0     # 2p per reset
-    resonator_idle: 2.0    # 2p on non-measured data during readout
-    twoq_depol: 1.0        # p on 2q
-    oneq_depol: 0.1        # p/10 on 1q
-    idle: 0.1              # p/10 on idle
-  iq_readout:
-    mode: simplified
-    snr: 10.0
-    tau: 0.0               # no amplitude damping in pretrain
-    pre_meas_leakage: 0.00275   # 0.275% injected before each measurement
+# Parameters for the paper-aligned noise model with GPT per channel.
+# Numbers here are reasonable placeholders; set with your device calibrations
+# if you want to reproduce a specific dataset.
 
-# Finetune (Pauli+)
-pauli_plus:
-  iq_readout:
-    mode: full
-    snr: 10.0
-    tau: 0.01             # amplitude-damping strength t/T1
-    meas_leak_rate: 0.001 # ~0.1% leakage during stabilizer meas
-  noise:
-    oneq_excess: 0.0005
-    cz_excess: 0.002
-    idle_during_meas: 0.0005
-    cz_leak: 0.0008        # |11> -> |02>/<20>
-    leak_transport: 0.0004 # |12>/<21> leakage propagation
-    crosstalk_z: 0.0015    # spectator Z-phase from parallel CZs
-  dqlr:
-    enabled: true
-    f_reset: 0.995        # fidelity of multi-level reset
-    rel_leak_after: 1e-4  # residual leakage probability post-DQLR
+cycle_ns: 1100.0
+T1_us: 68.0
+Tphi_us: 89.0
+p_heat: 0.0
 
-# Training defaults (example)
-train:
-  batch_size: 64
-  epochs_pretrain: 10
-  epochs_finetune: 10
-  optimizer: adamw
-  lr: 1.5e-4
-  weight_decay: 0.01
-  seed: 1
+# Readout / reset
+p_readout: 0.003
+p_reset: 0.003
 
-# Decoder inputs
-decoder_inputs:
-  use_soft_measurements: true
-  use_soft_detection_events: true
-  provide_intermediate_labels_in_pretrain_only: true
+# DQLR (rows sum to 1.0). Order of basis states: |0>, |1>, |2>
+dqlr_matrix:
+  - [1.0, 0.0, 0.0]
+  - [0.0, 1.0, 0.0]
+  - [0.05, 0.90, 0.05]
 
+# CZ related
+p_cz_leak_11_to_02: 0.001
+p_cz_crosstalk_ZZ: 0.0005
+p_cz_swap_like: 0.0005
+p_leak_transport_12_to_30: 0.0005
+
+# Residual (“excess”) errors
+p_1q_excess: 0.0005
+p_cz_excess: 0.0010
+p_idle_excess: 0.0005

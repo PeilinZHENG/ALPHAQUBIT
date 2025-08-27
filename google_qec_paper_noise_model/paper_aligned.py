@@ -1,3 +1,4 @@
+
 """
 Paper-aligned noise model with GPT per channel.
 
@@ -10,11 +11,13 @@ Primary reference:
   - DQLR imperfection modeled via Kraus channel on |0>,|1>,|2> (same section).
 """
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Dict, Tuple, List
 import numpy as np
 
 from .gpt import gpt_single_qubit
+ 
 
 
 def _amp_damp_kraus(gamma: float) -> List[np.ndarray]:
@@ -57,8 +60,25 @@ class PaperAlignedNoiseConfig:
     p_idle_excess: float = 0.0005
 
 
+
+
+
+from simulator.pauli_plus_simulator import PauliPlusSimulator
+
+
+@dataclass
+class PaperAlignedConfig:
+    """Subset of noise parameters used by the paper-aligned model."""
+    p_1q_excess: float = 0.0
+    p_cz_excess: float = 0.0
+    p_idle_excess: float = 0.0
+    p_cz_leak_11_to_02: float = 0.0
+    p_cz_crosstalk_ZZ: float = 0.0
+    p_cz_swap_like: float = 0.0
+
+
 class PaperAlignedNoiseModel:
-    """
+      """
     High-level façade that:
       1) Builds per-operation channels (T1/Tphi, leakage, CZ crosstalk, etc.)
       2) Applies GPT to each channel (Pauli twirl on the computational subspace)
@@ -74,6 +94,7 @@ class PaperAlignedNoiseModel:
         self.basis = basis.lower()
         if self.basis not in ("x", "z"):
             raise ValueError("basis must be 'x' or 'z'")
+ 
 
         # Precompute GPT-twirled single-qubit channels for convenience
         self._ptm_1q_idle = self._build_idle_ptm()
@@ -133,4 +154,21 @@ class PaperAlignedNoiseModel:
                          0.25 * self.cfg.p_cz_crosstalk_ZZ +
                          0.25 * self.cfg.p_cz_swap_like)
         logicals = rng.binomial(1, ler, size=(num_samples, n_observables)).astype(np.uint8)
+ 
+        # Build your existing Pauli+ circuit and then *instrument it* per paper
+        self.sim = PauliPlusSimulator(config, basis)
+        # The PauliPlusSimulator owns the Stim circuit; we attach paper-aligned noise.
+        self.sim.apply_paper_aligned_noise(config=self.cfg.__dict__)
+
+    def _load_cfg(self, config: Dict) -> PaperAlignedConfig:
+        """Convert a raw dict of parameters into a structured config object."""
+        fields = PaperAlignedConfig.__annotations__.keys()
+        values = {k: float(config.get(k, 0.0)) for k in fields}
+        return PaperAlignedConfig(**values)
+
+    def sample(self, num_samples: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Sample via Stim using the detector layout in the underlying circuit."""
+        sampler = self.sim.circuit.compile_detector_sampler()
+        syndromes, logicals = sampler.sample(num_samples, separate_observables=True)
+ 
         return syndromes, logicals
